@@ -1,0 +1,1178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#0f0e0c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Ledger" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="manifest" href="manifest.webmanifest" />
+<title>Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0f0e0c;
+  --bg-2:#181613;
+  --bg-3:#22201c;
+  --line:#2a2723;
+  --line-2:#363129;
+  --text:#f1ece3;
+  --text-2:#a39c8e;
+  --text-3:#6a6459;
+  --ember:#e89954;
+  --ember-2:#d4a574;
+  --green:#7fb069;
+  --red:#d97757;
+  --amber:#e0b54e;
+  --blue:#7aa5c4;
+  --r:14px;
+  --r-sm:10px;
+  --shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px -12px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:"Geist",system-ui,sans-serif;font-size:15px;line-height:1.45;overscroll-behavior-y:none;}
+body{
+  min-height:100dvh;
+  padding-bottom:calc(72px + env(safe-area-inset-bottom));
+  padding-top:env(safe-area-inset-top);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #1a1612 0%, transparent 60%),
+    radial-gradient(800px 400px at -10% 110%, #181410 0%, transparent 50%),
+    var(--bg);
+  background-attachment:fixed;
+}
+button,input,select,textarea{font:inherit;color:inherit;}
+button{background:none;border:0;cursor:pointer;padding:0;}
+a{color:var(--ember-2);text-decoration:none;}
+
+/* ── Top app bar ─────────────────────────── */
+.appbar{
+  position:sticky;top:0;z-index:50;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 18px 10px;
+  background:linear-gradient(to bottom, var(--bg) 60%, rgba(15,14,12,0));
+  padding-top:calc(14px + env(safe-area-inset-top));
+}
+.appbar h1{
+  font-family:"Instrument Serif",serif;
+  font-weight:400;font-style:italic;
+  font-size:28px;letter-spacing:.01em;margin:0;line-height:1;
+  color:var(--text);
+}
+.appbar h1 .dot{color:var(--ember);}
+.appbar .month{
+  font-size:12px;color:var(--text-2);text-transform:uppercase;letter-spacing:.14em;
+  display:flex;align-items:center;gap:8px;
+}
+.month-pick{
+  background:var(--bg-2);border:1px solid var(--line);border-radius:999px;
+  padding:6px 12px;font-size:12px;color:var(--text);letter-spacing:.06em;
+}
+
+/* ── Layout ─────────────────────────── */
+main{padding:4px 18px 24px;max-width:680px;margin:0 auto;}
+.view{display:none;}
+/* FIX(v2.4.2): tab switches are now instant. The old entrance animation slid
+   each view up 4px — invisible behind opaque chrome, but the bottom nav is
+   translucent + blurred, so the content sliding beneath it on every switch
+   read as the bar itself popping upward. (Add never showed it only because
+   the short form renders nothing under the bar.) No vertical motion, ever. */
+.view.active{display:block;}
+
+/* ── Cards ─────────────────────────── */
+.card{
+  background:var(--bg-2);
+  border:1px solid var(--line);
+  border-radius:var(--r);
+  padding:18px;
+  box-shadow:var(--shadow);
+}
+.card + .card{margin-top:14px;}
+.card-title{
+  font-size:11px;color:var(--text-3);text-transform:uppercase;
+  letter-spacing:.16em;margin:0 0 12px;font-weight:500;
+  display:flex;justify-content:space-between;align-items:center;
+}
+.card-title .pill{
+  font-family:"Geist";font-weight:500;font-size:10px;
+  background:var(--bg-3);border:1px solid var(--line);
+  padding:3px 8px;border-radius:999px;letter-spacing:.08em;color:var(--text-2);
+}
+
+/* ── Hero KPI ─────────────────────────── */
+.hero{
+  background:linear-gradient(140deg, var(--bg-2) 0%, #1c1814 100%);
+  border:1px solid var(--line);
+  border-radius:var(--r);
+  padding:22px 20px 18px;
+  margin-bottom:14px;
+  position:relative;overflow:hidden;
+}
+.hero::before{
+  content:"";position:absolute;top:-40%;right:-20%;width:70%;height:140%;
+  background:radial-gradient(closest-side, rgba(232,153,84,.10), transparent 70%);
+  pointer-events:none;
+}
+.hero .label{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.16em;}
+.hero .net{
+  font-family:"Instrument Serif",serif;font-weight:400;
+  font-size:54px;line-height:1;margin:6px 0 4px;
+  letter-spacing:-.01em;
+}
+.hero .net .sign{color:var(--text-3);font-style:italic;font-size:.6em;margin-right:6px;vertical-align:.18em;}
+.hero .net.pos{color:var(--green);}
+.hero .net.neg{color:var(--red);}
+.hero .sub{color:var(--text-2);font-size:13px;}
+.hero-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:18px;}
+.hero-grid.has-refunds{grid-template-columns:repeat(2,1fr);}
+.hero-stat{padding-top:14px;border-top:1px solid var(--line);}
+.hero-stat .v{font-family:"Instrument Serif",serif;font-size:22px;line-height:1;}
+.hero-stat .l{font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.14em;margin-top:6px;}
+.hero-stat.income .v{color:var(--green);}
+.hero-stat.expense .v{color:var(--red);}
+.hero-stat.invest .v{color:var(--blue);}
+.hero-stat.refund .v{color:var(--ember-2);}
+
+/* ── Money state row ─────────────────────────── */
+.money-state{
+  display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;
+}
+.money-tile{
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:14px;
+}
+.money-tile .l{font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.14em;}
+.money-tile .v{font-family:"Instrument Serif",serif;font-size:24px;margin-top:6px;line-height:1;}
+.money-tile.cash .v{color:var(--text);}
+.money-tile.debt .v{color:var(--amber);}
+.money-tile.after .v.pos{color:var(--green);}
+.money-tile.after .v.neg{color:var(--red);}
+.money-tile.full{grid-column:1/-1;}
+
+/* ── Account list ─────────────────────────── */
+.acct-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px 0;border-bottom:1px solid var(--line);
+}
+.acct-row:last-child{border-bottom:0;}
+.acct-row .left{display:flex;align-items:center;gap:12px;min-width:0;flex:1;}
+.acct-bullet{
+  width:8px;height:8px;border-radius:2px;flex-shrink:0;
+  background:var(--text-3);
+}
+.acct-bullet.checking{background:var(--green);}
+.acct-bullet.cc{background:var(--amber);}
+.acct-name{font-size:14px;font-weight:500;letter-spacing:.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.acct-meta{font-size:11px;color:var(--text-3);margin-top:2px;text-transform:uppercase;letter-spacing:.1em;}
+.acct-bal{font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:500;text-align:right;}
+.acct-bal.cc{color:var(--amber);}
+
+/* ── Budget bars ─────────────────────────── */
+.bdg-row{padding:11px 0;border-bottom:1px solid var(--line);}
+.bdg-row:last-child{border-bottom:0;}
+.bdg-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;}
+.bdg-name{font-size:13.5px;font-weight:500;}
+.bdg-nums{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--text-2);}
+.bdg-nums b{color:var(--text);font-weight:500;}
+.bar{
+  height:6px;background:var(--bg-3);border-radius:3px;overflow:hidden;margin-top:7px;position:relative;
+}
+.bar > i{
+  display:block;height:100%;background:var(--green);border-radius:3px;transition:width .3s;
+}
+.bar.warn > i{background:var(--amber);}
+.bar.over > i{background:var(--red);}
+
+/* ── Add transaction form ─────────────────────────── */
+.type-pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;}
+.type-pill{
+  flex:1;min-width:74px;padding:11px 8px;border-radius:var(--r-sm);
+  background:var(--bg-2);border:1px solid var(--line);
+  font-size:12px;font-weight:500;letter-spacing:.04em;
+  text-align:center;color:var(--text-2);
+  transition:all .15s;
+}
+.type-pill[aria-pressed=true]{
+  background:linear-gradient(180deg, #2a221b, #1f1813);
+  border-color:var(--ember);color:var(--text);
+  box-shadow:0 0 0 2px rgba(232,153,84,.12);
+}
+.field{margin-bottom:14px;}
+.field label{
+  display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.14em;
+  color:var(--text-3);margin-bottom:6px;font-weight:500;
+}
+.input{
+  width:100%;background:var(--bg-2);border:1px solid var(--line);
+  border-radius:var(--r-sm);padding:13px 14px;color:var(--text);
+  font-size:15px;outline:none;transition:border-color .15s;
+}
+.input:focus{border-color:var(--ember);}
+.input.amount{
+  font-family:"Instrument Serif",serif;font-size:34px;padding:14px 16px;
+  letter-spacing:-.01em;
+}
+select.input{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 7'><path d='M1 1l5 5 5-5' stroke='%23a39c8e' stroke-width='1.4' fill='none' stroke-linecap='round'/></svg>");background-repeat:no-repeat;background-position:right 14px center;background-size:12px;padding-right:36px;}
+
+/* ── Picker button (replaces native <select> in Add form for better touch UX) ─────────────── */
+.picker-btn{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  text-align:left;cursor:pointer;
+  min-height:48px;
+}
+.picker-btn .picker-val{
+  flex:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  color:var(--text);font-size:15px;
+}
+.picker-btn .picker-chev{
+  color:var(--text-3);font-size:11px;flex-shrink:0;
+}
+.picker-btn:active{background:var(--bg-3);}
+.picker-list{
+  display:flex;flex-direction:column;gap:6px;
+  max-height:62dvh;overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+}
+.picker-option{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;text-align:left;
+  padding:14px 16px;border-radius:var(--r-sm);
+  background:var(--bg-2);border:1px solid var(--line);
+  color:var(--text);font-size:15px;font-weight:500;
+  transition:background .1s, border-color .1s;
+}
+.picker-option:active{background:var(--bg-3);}
+.picker-option.selected{
+  background:linear-gradient(180deg, #2a221b, #1f1813);
+  border-color:var(--ember);
+}
+.picker-check{color:var(--ember);font-weight:600;}
+
+/* ── Starting Balances list (v1.0.4 redesign) ─────────── */
+/* Account-focused vertical list — one row per month. Much more readable on
+   narrow phones AND on the unfolded Fold 6 than the old 13-column table. */
+.sb-list{
+  display:flex;flex-direction:column;gap:8px;margin-top:4px;
+}
+.sb-row{
+  display:grid;
+  grid-template-columns: 56px 1fr 1fr;
+  gap:12px;align-items:center;
+  padding:12px 14px;
+  background:var(--bg-2);border:1px solid var(--line);
+  border-radius:var(--r-sm);
+}
+.sb-month{
+  font-family:"Instrument Serif",serif;font-size:20px;line-height:1;
+  color:var(--ember-2);text-transform:uppercase;letter-spacing:.02em;
+}
+.sb-field{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.sb-field label{
+  font-size:9.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.14em;
+}
+.sb-input{
+  width:100%;min-width:0;
+  background:var(--bg);border:1px solid var(--line-2);
+  border-radius:6px;padding:9px 10px;color:var(--text);
+  font-family:"JetBrains Mono",monospace;font-size:13.5px;font-weight:500;
+  text-align:right;outline:none;transition:border-color .15s;
+}
+.sb-input:focus{border-color:var(--ember);}
+.sb-calc{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:11.5px;}
+.sb-calc-row{
+  display:flex;justify-content:space-between;gap:6px;
+  color:var(--text-3);
+}
+.sb-calc-row span:first-child{
+  text-transform:uppercase;letter-spacing:.1em;font-size:9.5px;
+}
+.sb-calc-row .mono{font-size:12px;color:var(--text-2);}
+.sb-calc-row .mono.pos{color:var(--green);}
+.sb-calc-row .mono.neg{color:var(--red);}
+.sb-calc-row.end{padding-top:3px;border-top:1px solid var(--line);margin-top:1px;}
+.sb-calc-row.end span:first-child{color:var(--text-2);}
+.sb-calc-row.end .mono{color:var(--text);font-weight:500;}
+.row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:14px 20px;border-radius:var(--r-sm);
+  font-weight:600;font-size:14px;letter-spacing:.02em;
+  background:var(--ember);color:#1a0f06;
+  transition:transform .1s, filter .15s;
+  width:100%;
+}
+.btn:active{transform:scale(.98);filter:brightness(1.05);}
+.btn.secondary{background:var(--bg-3);color:var(--text);border:1px solid var(--line);}
+.btn.ghost{background:transparent;color:var(--text-2);border:1px solid var(--line);}
+.btn.danger{background:#3a1f1a;color:#e8a99c;border:1px solid #5a2c24;}
+
+/* ── Transactions list ─────────────────────────── */
+.txn-filters{
+  display:flex;gap:8px;margin:0 0 14px;overflow-x:auto;
+  -webkit-overflow-scrolling:touch; /* FIX(v1.2) */
+  padding-bottom:4px;
+  scrollbar-width:none;
+}
+.txn-filters::-webkit-scrollbar{display:none;}
+.chip{
+  /* FIX(v1.2): chips were ~31px tall — below the 44px touch-target guideline */
+  flex-shrink:0;padding:11px 14px;min-height:40px;border-radius:999px;
+  background:var(--bg-2);border:1px solid var(--line);
+  font-size:12px;color:var(--text-2);font-weight:500;letter-spacing:.02em;
+}
+.chip[aria-pressed=true]{background:var(--ember);color:#1a0f06;border-color:var(--ember);}
+.txn-search{margin-bottom:12px;}
+.txn-day{
+  font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.18em;
+  padding:18px 4px 8px;font-weight:500;
+}
+.txn-day:first-child{padding-top:6px;}
+.txn{
+  display:flex;align-items:center;gap:14px;padding:13px 14px;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  margin-bottom:7px;
+  transition:background .12s;
+}
+.txn:active{background:var(--bg-3);}
+.txn-icon{
+  width:34px;height:34px;border-radius:8px;flex-shrink:0;
+  display:grid;place-items:center;font-size:14px;font-weight:600;
+  background:var(--bg-3);color:var(--text-2);
+}
+.txn-icon.exp{background:rgba(217,119,87,.12);color:var(--red);}
+.txn-icon.inc{background:rgba(127,176,105,.14);color:var(--green);}
+.txn-icon.rfnd{background:rgba(127,176,105,.14);color:var(--green);}
+.txn-icon.inv{background:rgba(122,165,196,.14);color:var(--blue);}
+.txn-icon.tfr{background:rgba(224,181,78,.14);color:var(--amber);}
+.txn-icon.pay{background:rgba(232,153,84,.14);color:var(--ember);}
+.txn-icon.bxfr{background:rgba(212,165,116,.14);color:var(--ember-2);}
+.txn-body{flex:1;min-width:0;}
+.txn-cat{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.txn-meta{font-size:11.5px;color:var(--text-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.txn-amt{font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:500;text-align:right;flex-shrink:0;}
+.txn-amt.neg{color:var(--red);}
+.txn-amt.pos{color:var(--green);}
+.txn-amt.neu{color:var(--text-2);}
+
+/* ── Debt plans ─────────────────────────── */
+.debt-card{
+  background:linear-gradient(140deg, var(--bg-2), #1d1814);
+  border:1px solid var(--line);border-radius:var(--r);
+  padding:18px;margin-bottom:12px;position:relative;overflow:hidden;
+}
+.debt-head{display:flex;justify-content:space-between;align-items:baseline;}
+.debt-name{font-size:15px;font-weight:600;}
+.debt-bal{font-family:"Instrument Serif",serif;font-size:32px;color:var(--amber);line-height:1;margin-top:6px;}
+.debt-meta{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em;margin-top:6px;}
+.debt-progress{margin-top:14px;}
+.debt-bar{height:5px;background:var(--bg-3);border-radius:3px;overflow:hidden;margin-top:8px;}
+.debt-bar > i{display:block;height:100%;background:linear-gradient(90deg, var(--ember), var(--amber));border-radius:3px;}
+.debt-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);}
+.debt-stat .v{font-family:"JetBrains Mono",monospace;font-size:13px;font-weight:500;}
+.debt-stat .l{font-size:9.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em;margin-top:3px;}
+.debt-warn{
+  margin-top:12px;padding:10px 12px;background:rgba(224,181,78,.08);border:1px solid rgba(224,181,78,.2);
+  border-radius:var(--r-sm);font-size:12px;color:var(--amber);
+}
+.debt-good{
+  margin-top:12px;padding:10px 12px;background:rgba(127,176,105,.08);border:1px solid rgba(127,176,105,.2);
+  border-radius:var(--r-sm);font-size:12px;color:var(--green);
+}
+.debt-actions{display:flex;gap:8px;margin-top:12px;}
+.debt-actions .btn{padding:9px 12px;font-size:12.5px;}
+
+/* ── Bottom nav ─────────────────────────── */
+nav.tabs{
+  position:fixed;bottom:0;left:0;right:0;z-index:60;
+  display:flex;justify-content:space-around;align-items:center;
+  background:rgba(15,14,12,.92);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-top:1px solid var(--line);
+  padding:8px 4px calc(8px + env(safe-area-inset-bottom));
+}
+.tab{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:8px 4px;color:var(--text-3);font-size:10.5px;
+  text-transform:uppercase;letter-spacing:.1em;font-weight:500;
+  position:relative;
+}
+.tab svg{width:22px;height:22px;}
+.tab[aria-current=page]{color:var(--ember);}
+.tab.add{position:relative;overflow:visible !important;} /* FIX(v2.4.1): ripple's overflow:hidden was clipping the raised FAB */
+.tab.add .fab{
+  width:46px;height:46px;border-radius:50%;
+  background:linear-gradient(140deg, var(--ember), #c97a3a);
+  display:grid;place-items:center;color:#1a0f06;
+  margin-top:-18px;margin-bottom:-3px;
+  box-shadow:0 6px 18px -4px rgba(232,153,84,.5);
+}
+.tab.add .fab svg{width:24px;height:24px;}
+.tab.add[aria-current=page]{color:var(--ember);}
+
+/* ── Modals/Sheets ─────────────────────────── */
+.sheet-backdrop{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:80;
+  opacity:0;pointer-events:none;transition:opacity .2s;
+}
+.sheet-backdrop.open{opacity:1;pointer-events:auto;}
+.sheet{
+  position:fixed;left:0;right:0;bottom:0;z-index:90;
+  background:var(--bg-2);border-top-left-radius:24px;border-top-right-radius:24px;
+  padding:16px 18px calc(20px + env(safe-area-inset-bottom));
+  max-height:88dvh;overflow-y:auto;
+  -webkit-overflow-scrolling:touch; /* FIX(v1.2): momentum scrolling on Samsung Internet */
+  transform:translateY(100%);transition:transform .25s cubic-bezier(.2,.8,.2,1);
+  border-top:1px solid var(--line);
+}
+.sheet.open{transform:translateY(0);}
+/* FIX(v2.4.1): sticky — the handle previously scrolled away with the
+   content, so "drag the handle" silently became "drag the list". It now
+   pins to the sheet's top with a fade so it's always the grab point. */
+.sheet-handle{
+  position:sticky;top:0;z-index:5;
+  width:auto;height:auto;background:none;border-radius:0;
+  margin:-18px -18px 6px;padding:8px 0 10px;
+  background:linear-gradient(to bottom, var(--bg-1) 60%, transparent);
+  touch-action:none;
+}
+.sheet-handle::after{
+  content:'';display:block;width:36px;height:4px;margin:0 auto;
+  background:var(--line-2);border-radius:2px;
+}
+.sheet h2{font-family:"Instrument Serif",serif;font-weight:400;font-size:24px;margin:0 0 14px;}
+
+/* ── More menu ─────────────────────────── */
+.menu-item{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:16px 18px;background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  margin-bottom:8px;font-size:14.5px;
+}
+.menu-item .l{display:flex;align-items:center;gap:14px;}
+.menu-item .ico{
+  width:32px;height:32px;border-radius:8px;background:var(--bg-3);
+  display:grid;place-items:center;color:var(--text-2);
+}
+.menu-item .ico svg{width:16px;height:16px;}
+.menu-item .arrow{color:var(--text-3);}
+
+/* ── Toast ─────────────────────────── */
+.toast{
+  position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(20px);
+  background:var(--text);color:var(--bg);padding:11px 18px;border-radius:999px;
+  font-size:13px;font-weight:500;z-index:200;opacity:0;transition:all .25s;pointer-events:none;
+  box-shadow:0 10px 30px -8px rgba(0,0,0,.5);
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+/* ── Empty states ─────────────────────────── */
+.empty{
+  text-align:center;padding:50px 20px;color:var(--text-3);font-size:13.5px;
+}
+.empty .big{font-family:"Instrument Serif",serif;font-style:italic;font-size:28px;color:var(--text-2);margin-bottom:8px;}
+
+/* ── Net Worth chart ─────────────────────────── */
+.nw-chart{height:160px;width:100%;margin-top:8px;}
+.nw-chart .gridline{stroke:var(--line);stroke-width:1;}
+.nw-chart .area{fill:url(#nwgrad);}
+.nw-chart .line{fill:none;stroke:var(--ember);stroke-width:2;}
+.nw-chart .dot{fill:var(--ember);}
+.nw-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px;}
+.nw-stat{padding:12px;background:var(--bg-3);border-radius:var(--r-sm);}
+.nw-stat .l{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em;}
+.nw-stat .v{font-family:"Instrument Serif",serif;font-size:18px;margin-top:4px;}
+
+/* ════════════════════════════════════════════════════════════
+   NEW(v2.2): native-feel layer — ripples, motion, press states
+   ════════════════════════════════════════════════════════════ */
+
+/* ── Material ripple (spawned by initRipples in util.js) ── */
+.has-ripple{position:relative;overflow:hidden;}
+.ripple{
+  position:absolute;border-radius:50%;pointer-events:none;
+  background:currentColor;opacity:.14;
+  transform:scale(0);
+  animation:ripple .55s cubic-bezier(.2,.6,.4,1) forwards;
+}
+@keyframes ripple{
+  to{transform:scale(1);opacity:0;}
+}
+
+/* ── Press states — FIX(v2.4): scale/brightness transforms removed from
+   everything inside scrollable lists (picker options, menu items, chips,
+   txn/bill rows). They fired on every touch while scrolling and made lists
+   feel clunky. Discrete buttons keep their response; list items get a
+   plain background tint only. ── */
+.btn, .type-pill, .seg-btn{
+  transition:transform .12s ease, filter .15s ease, background .15s ease;
+}
+.type-pill:active, .seg-btn:active{transform:scale(.97);}
+.picker-option:active, .menu-item:active{background:var(--bg-3);}
+/* FIX(v2.4.3): the bottom nav is now a zero-motion zone. Ripple spans, the
+   animated M3 pill (::before with transform), and icon scale transforms were
+   all attached to tabs inside a backdrop-filtered fixed bar — and tabs were
+   visibly jumping out of the bar on Samsung Internet. Every transform,
+   transition, pseudo-element animation, and DOM injection on tabs is gone.
+   Active state = color, pressed state = color. Nothing moves. */
+.tab{transition:color .15s ease;}
+.tab:active{color:var(--text-2);}
+.tab[aria-current=page]:active{color:var(--ember);}
+.tab.add .fab{transition:filter .15s ease;}
+.tab.add:active .fab{filter:brightness(1.15);}
+
+/* Long-press shouldn't select button labels (reads as web, not app) */
+.btn, .chip, .menu-item, .tab, .picker-option, .type-pill, .seg-btn, .sheet-handle{
+  user-select:none;-webkit-user-select:none;
+}
+
+/* ── Sheet: springier entrance, bigger grab zone, perf hint ── */
+.sheet{
+  transition:transform .3s cubic-bezier(.32,.72,.25,1);
+  will-change:transform;
+  overscroll-behavior:contain; /* FIX(v2.4): list scroll can't chain/bounce the page */
+}
+.sheet-backdrop{
+  transition:opacity .25s ease;
+}
+@supports (backdrop-filter: blur(4px)){
+  .sheet-backdrop{backdrop-filter:blur(5px) saturate(.85);-webkit-backdrop-filter:blur(5px) saturate(.85);background:rgba(0,0,0,.45);}
+}
+
+/* ── Toast: snackbar physics + gesture-nav safe area ── */
+.toast{
+  bottom:calc(96px + env(safe-area-inset-bottom));
+  transition:opacity .22s ease, transform .25s cubic-bezier(.2,.8,.3,1.15);
+}
+
+/* ── Keyboard focus (desktop sync use later) without touch outlines ── */
+:focus{outline:none;}
+:focus-visible{outline:2px solid var(--ember);outline-offset:2px;border-radius:6px;}
+
+/* ── Inputs: calmer focus ring matching the theme ── */
+.input:focus{border-color:var(--ember);box-shadow:0 0 0 3px rgba(232,153,84,.12);}
+
+
+/* ── NEW(v2.0): Reconcile / Trash rows + stats, Goals ───────────── */
+.rec-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0 14px;}
+.rec-stat{padding:12px;background:var(--bg-3);border-radius:var(--r-sm);text-align:center;}
+.rec-stat .v{font-family:"Instrument Serif",serif;font-size:22px;line-height:1;}
+.rec-stat .l{font-size:9.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.1em;margin-top:5px;}
+.rec-row{
+  display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:10px 12px;background:var(--bg-2);border:1px solid var(--line);
+  border-radius:var(--r-sm);margin-bottom:6px;min-height:44px;
+}
+.rec-row .arrow{color:var(--text-3);font-size:18px;flex-shrink:0;}
+.goal-row{padding:10px 0;}
+.goal-row + .goal-row{border-top:1px solid var(--line);}
+
+/* ── NEW(v2.6): month-end pace card ── */
+.pace-bar{
+  position:relative;height:10px;border-radius:6px;background:var(--bg-3);
+  overflow:visible;margin:4px 0 12px;
+}
+.pace-bar i{
+  position:absolute;left:0;top:0;bottom:0;border-radius:6px;
+  background:linear-gradient(90deg, var(--ember), #c97a3a);
+}
+.pace-bar b{
+  position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text-2);
+  border-radius:1px;opacity:.7;
+}
+.pace-rows{display:flex;flex-direction:column;gap:5px;}
+.pace-row{display:flex;justify-content:space-between;align-items:baseline;font-size:13.5px;}
+.pace-row .mono b{font-weight:600;}
+
+/* NEW(v2.6): subscription price-change badge */
+.sub-pricechange{
+  display:inline-block;margin-left:8px;padding:2px 7px;border-radius:999px;
+  font-size:10px;font-weight:600;letter-spacing:.03em;
+  background:rgba(224,122,95,.14);color:var(--red);vertical-align:1px;
+}
+
+/* ── NEW(v2.4.1): quick-log type buttons on Home ── */
+.qa-row{display:flex;gap:8px;margin:14px 0 2px;}
+.qa-btn{
+  flex:1;display:flex;align-items:center;justify-content:center;gap:8px;
+  padding:11px 8px;min-height:46px;border-radius:14px;
+  background:var(--bg-2);border:1px solid var(--line);color:var(--text);
+  font:inherit;font-size:13.5px;font-weight:600;letter-spacing:.01em;cursor:pointer;
+}
+.qa-ico{
+  width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:14px;font-weight:700;flex-shrink:0;
+}
+.qa-ico.expense{background:rgba(224,122,95,.16);color:var(--red);}
+.qa-ico.income{background:rgba(141,185,120,.16);color:var(--green);}
+.qa-ico.refund{background:rgba(232,153,84,.16);color:var(--ember);}
+
+
+/* ── Splash / loading ─────────────────────────── */
+.splash{
+  position:fixed;inset:0;background:var(--bg);z-index:300;
+  display:grid;place-items:center;
+}
+.splash .mark{font-family:"Instrument Serif",serif;font-style:italic;font-size:54px;color:var(--ember);}
+
+/* ── Misc ─────────────────────────── */
+.muted{color:var(--text-3);}
+.small{font-size:12px;}
+.mono{font-family:"JetBrains Mono",monospace;font-size:13px;font-weight:500;}
+.amber{color:var(--amber);}
+.pos{color:var(--green);}
+.neg{color:var(--red);}
+hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
+.kbd{font-family:"JetBrains Mono",monospace;font-size:11px;background:var(--bg-3);padding:1px 6px;border-radius:4px;color:var(--text-2);}
+
+/* ── Real Available card ─────────────────────────── */
+.real-card{
+  background:linear-gradient(150deg, #191714 0%, #1a1510 100%);
+  border:1px solid var(--line);
+  border-radius:var(--r);
+  padding:20px;
+  margin-top:14px;
+}
+.real-head{display:flex;justify-content:space-between;align-items:flex-start;}
+.real-head .l{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.16em;}
+.real-head .v{font-family:"Instrument Serif",serif;font-size:42px;line-height:1;margin-top:6px;}
+.real-head .v.pos{color:var(--green);}
+.real-head .v.neg{color:var(--red);}
+.real-head .sub{font-size:12px;color:var(--text-3);margin-top:4px;}
+.real-breakdown{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);}
+.rb-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:13.5px;color:var(--text-2);}
+.rb-row.total{padding-top:10px;margin-top:6px;border-top:1px solid var(--line);color:var(--text);font-weight:500;}
+
+/* ── Debt summary ─────────────────────────── */
+.debt-summary{margin-top:8px;}
+.ds-row{display:flex;justify-content:space-between;padding:5px 0;font-size:13.5px;color:var(--text-2);}
+.ds-row.total{padding-top:10px;margin-top:6px;border-top:1px solid var(--line);color:var(--text);font-weight:500;}
+
+/* ── Bill rows ─────────────────────────── */
+.bill-section{margin-top:14px;}
+.bill-section-head{
+  font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.16em;
+  padding:0 0 8px;font-weight:500;
+}
+.bill-row{
+  display:flex;align-items:center;gap:12px;
+  padding:13px 14px;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  margin-bottom:7px;
+  transition:background .12s;
+}
+.bill-row:active{background:var(--bg-3);}
+.bill-row.is-paid{opacity:.55;}
+.bill-check{
+  width:22px;height:22px;border-radius:6px;flex-shrink:0;
+  border:2px solid var(--line-2);background:transparent;
+  display:grid;place-items:center;color:var(--green);
+  transition:all .15s;
+}
+.bill-check.checked{background:rgba(127,176,105,.18);border-color:var(--green);}
+.bill-body{flex:1;min-width:0;}
+.bill-name{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.bill-meta{font-size:11px;color:var(--text-3);margin-top:2px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;}
+.bill-status{font-weight:500;}
+.bill-status.overdue{color:var(--red);}
+.bill-status.today{color:var(--amber);}
+.bill-status.soon{color:var(--amber);}
+.bill-status.future{color:var(--text-3);}
+.bill-status.paid{color:var(--green);}
+.bill-acct{color:var(--text-3);}
+.bill-amt{flex-shrink:0;text-align:right;}
+.bill-once-tag{
+  display:inline-block;font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  padding:1.5px 6px;margin-left:6px;border-radius:4px;
+  background:rgba(127,140,176,.15);color:var(--text-3);border:1px solid var(--line);
+  vertical-align:1px;
+}
+.bill-auto-tag{
+  display:inline-block;font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  padding:1.5px 6px;margin-left:6px;border-radius:4px;
+  background:rgba(120,180,200,.18);color:#7fb6c8;border:1px solid rgba(120,180,200,.3);
+  vertical-align:1px;
+}
+.seg{
+  display:flex;background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:3px;gap:3px;
+}
+.seg-btn{
+  flex:1;background:transparent;border:none;color:var(--text-2);
+  padding:9px 10px;font-size:13.5px;font-weight:500;border-radius:calc(var(--r-sm) - 4px);
+  cursor:pointer;transition:background .12s,color .12s;
+}
+.seg-btn.active{background:var(--bg-3);color:var(--text);}
+/* When the seg has 3 buttons, tighten font/padding so it fits comfortably on narrow phones */
+.seg-3 .seg-btn{font-size:12.5px;padding:9px 6px;letter-spacing:-.005em;}
+.bill-summary{
+  display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:14px;
+}
+.bs-tile{
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:14px;
+}
+.bs-tile .l{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em;}
+.bs-tile .v{font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:500;margin-top:6px;}
+
+/* ── Loan bullet ─────────────────────────── */
+.acct-bullet.loan{background:var(--blue);}
+
+/* ── Migration banner ─────────────────────────── */
+.migrate-banner{
+  background:linear-gradient(140deg, #1f1a14, #1a1510);
+  border:1px solid rgba(232,153,84,.3);
+  border-radius:var(--r);
+  padding:14px 16px;
+  margin-bottom:14px;
+  box-shadow:0 0 0 3px rgba(232,153,84,.04);
+}
+.migrate-head{display:flex;align-items:flex-start;gap:12px;}
+.migrate-dot{
+  width:30px;height:30px;flex-shrink:0;border-radius:8px;
+  background:rgba(127,176,105,.14);color:var(--green);
+  display:grid;place-items:center;font-size:16px;font-weight:600;
+}
+.migrate-title{font-size:13.5px;font-weight:500;color:var(--text);}
+.migrate-sub{font-size:12px;color:var(--text-2);margin-top:3px;}
+.migrate-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;}
+
+/* ── Subscriptions / Recurring ─────────────────────────── */
+.sub-totals{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:10px;
+}
+.sub-tile{
+  background:var(--bg-3);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:13px 12px;text-align:left;
+}
+.sub-tile .l{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em;}
+.sub-tile .v{font-family:"Instrument Serif",serif;font-size:20px;margin-top:6px;line-height:1;color:var(--ember-2);}
+.sub-row{
+  padding:14px 0;border-bottom:1px solid var(--line);
+}
+.sub-row:last-child{border-bottom:0;}
+.sub-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;}
+.sub-name{font-size:14px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sub-amt{font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:500;color:var(--ember-2);flex-shrink:0;}
+.sub-meta{
+  font-size:11px;color:var(--text-3);margin-top:5px;
+  display:flex;gap:5px;flex-wrap:wrap;align-items:center;
+}
+.sub-next.overdue{color:var(--red);font-weight:500;}
+.sub-next.today{color:var(--amber);font-weight:500;}
+.sub-next.soon{color:var(--amber);font-weight:500;}
+.sub-next.future{color:var(--text-2);}
+.sub-bar{
+  height:4px;background:var(--bg-3);border-radius:2px;overflow:hidden;margin-top:9px;
+}
+.sub-bar > i{
+  display:block;height:100%;
+  background:linear-gradient(90deg, var(--ember), var(--amber));
+  border-radius:2px;
+}
+.sub-foot{
+  display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;
+}
+
+/* ── About sheet ─────────────────────────── */
+.about-brand{
+  text-align:center;
+  padding:24px 16px 22px;
+  margin:-8px -2px 18px;
+  background:linear-gradient(160deg, #1f1a14 0%, #181410 100%);
+  border:1px solid var(--line);
+  border-radius:var(--r);
+  position:relative;overflow:hidden;
+}
+.about-brand::before{
+  content:"";position:absolute;top:-40%;right:-20%;width:70%;height:140%;
+  background:radial-gradient(closest-side, rgba(232,153,84,.12), transparent 70%);
+  pointer-events:none;
+}
+.about-mark{
+  font-family:"Instrument Serif",serif;font-style:italic;
+  font-size:44px;line-height:1;color:var(--text);
+  letter-spacing:.01em;
+}
+.about-version{
+  font-family:"JetBrains Mono",monospace;
+  font-size:13px;color:var(--ember-2);
+  margin-top:8px;letter-spacing:.08em;
+}
+.about-stats{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:10px;
+}
+.about-stat{
+  padding:14px 10px;background:var(--bg-3);border-radius:var(--r-sm);
+  text-align:center;border:1px solid var(--line);
+}
+.about-stat .v{font-family:"Instrument Serif",serif;font-size:22px;line-height:1;color:var(--text);}
+.about-stat .l{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em;margin-top:6px;}
+.about-footer{
+  text-align:center;margin-top:24px;padding-top:18px;border-top:1px solid var(--line);
+  color:var(--text-3);font-size:11px;letter-spacing:.06em;line-height:1.8;
+}
+
+/* ── Foldable unfolded / tablet-like screens (Z Fold 6 inner display) ─────────── */
+/* Folded cover (~376 CSS px) uses the default mobile layout above.
+   Unfolded inner display ranges from ~620px (portrait) to ~900px (landscape)
+   depending on display scaling. Breakpoint set at 560px so both orientations
+   of the unfolded state pick up the wider layout. */
+@media (min-width: 560px){
+  html, body { font-size: 15.5px; }
+
+  main {
+    max-width: 1000px;
+    padding: 4px 32px 32px;
+  }
+  .appbar {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 14px 32px 10px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+  }
+  .appbar h1 { font-size: 32px; }
+
+  /* Dashboard-style views — 2-column masonry. Unfolded the Z Fold 6 is nearly square,
+     so going 2-wide is the right tradeoff: less scrolling, more at a glance. The CSS
+     column gap naturally aligns with the hinge crease in the middle of the display. */
+  #view-home, #view-debts, #view-more {
+    column-count: 2;
+    column-gap: 20px;
+  }
+  #view-home > *, #view-debts > *, #view-more > * {
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+    page-break-inside: avoid;
+    margin-top: 0 !important;
+    margin-bottom: 20px !important;
+    display: block;
+  }
+
+  /* List views: use the full main width, no extra cap. Side padding from main is enough. */
+  #view-txns, #view-bills, #view-add {
+    max-width: 100%;
+  }
+
+  /* Inside Add form, the row-2 grid stays 2-col but each field gets more room */
+  #view-add .row-2 { gap: 16px; }
+
+  /* Hero enlargements */
+  .hero { padding: 28px 26px 24px; }
+  .hero .net { font-size: 68px; }
+  .hero-stat .v { font-size: 24px; }
+  .hero-grid.has-refunds { grid-template-columns: repeat(4, 1fr); }
+
+  /* Real-available card bigger number */
+  .real-head .v { font-size: 50px; }
+
+  /* Add form — bigger pills & amount */
+  .type-pill { min-width: 86px; padding: 13px 10px; font-size: 12.5px; }
+  .input.amount { font-size: 44px; }
+
+  /* Bottom nav — centered floating bar instead of full-width stripe */
+  nav.tabs {
+    /* FIX(v2.4.3): centered via auto margins instead of transform — the nav
+       must carry zero transforms at any width (compositing stability on
+       Samsung Internet, and this is the unfolded-Fold breakpoint). */
+    max-width: 620px;
+    left: 0;
+    right: 0;
+    margin: 0 auto;
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-top-left-radius: 22px;
+    border-top-right-radius: 22px;
+  }
+
+  /* Bottom sheets — fill the width on unfolded (no awkward narrow centered look) */
+  .sheet {
+    max-width: 860px;
+    left: 50%;
+    right: auto;
+    transform: translate(-50%, 100%);
+  }
+  .sheet.open { transform: translate(-50%, 0); }
+
+  /* Splash mark scales up for bigger canvas */
+  .splash .mark { font-size: 68px; }
+
+  /* Subscription tiles — more room each */
+  .sub-totals { gap: 14px; }
+  .sub-tile .v { font-size: 22px; }
+
+  /* Picker options get a bit more room on unfolded */
+  .picker-option { padding: 16px 18px; font-size: 15.5px; }
+
+  /* Starting balances — slightly more breathing room on unfolded */
+  .sb-row { grid-template-columns: 70px 1fr 1fr; gap:16px; padding:14px 18px; }
+  .sb-month { font-size: 24px; }
+  .sb-input { font-size: 14.5px; padding: 10px 12px; }
+  .sb-calc-row .mono { font-size: 12.5px; }
+}
+
+/* ── Very wide (desktop / external monitor) ─────────── */
+@media (min-width: 1100px){
+  #view-home, #view-debts, #view-more {
+    column-count: 3;
+  }
+}
+
+/* ============================================================
+   v1.1.0 additions below: breakdown, year view, forecast,
+   insights, merchant-autocomplete, and sheet tweaks.
+   ============================================================ */
+
+/* ── Insights card (Home) ─────────────────────────── */
+.insights-card .insight-row{
+  display:flex;gap:12px;align-items:flex-start;
+  padding:10px 0;border-bottom:1px solid var(--line);
+}
+.insights-card .insight-row:last-child{border-bottom:0;}
+.insight-dot{
+  width:8px;height:8px;border-radius:50%;margin-top:7px;flex-shrink:0;
+  box-shadow:0 0 0 3px rgba(255,255,255,.02);
+}
+.insight-body{flex:1;min-width:0;}
+.insight-title{font-size:13.5px;font-weight:500;line-height:1.35;}
+.insight-detail{font-size:11.5px;color:var(--text-3);margin-top:3px;line-height:1.4;}
+
+/* ── Monthly Breakdown ─────────────────────────── */
+.brk-section{margin:20px 0 8px;}
+.brk-sec-head{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:6px 0 12px;border-bottom:1px solid var(--line);margin-bottom:10px;
+}
+.brk-sec-label{
+  font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.16em;font-weight:500;
+}
+.brk-sec-total{font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:500;}
+.brk-sec-total.income{color:var(--green);}
+.brk-sec-total.expense{color:var(--red);}
+.brk-sec-total.invest{color:var(--blue);}
+.brk-sec-total.refund{color:var(--ember-2);}
+.brk-row{
+  display:block;width:100%;text-align:left;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:12px 14px;margin-bottom:8px;
+  transition:background .12s;
+}
+.brk-row:active{background:var(--bg-3);}
+.brk-row-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
+.brk-row-cat{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.brk-row-amt{font-size:14px;font-weight:500;flex-shrink:0;}
+.brk-row-bar{
+  height:5px;background:var(--bg-3);border-radius:3px;overflow:hidden;margin:9px 0 6px;
+}
+.brk-row-bar > i{
+  display:block;height:100%;border-radius:3px;
+  background:linear-gradient(90deg, var(--text-3), var(--text-3));
+}
+.brk-row-bar.income > i{background:linear-gradient(90deg, var(--green), #9ec884);}
+.brk-row-bar.expense > i{background:linear-gradient(90deg, var(--red), #e89076);}
+.brk-row-bar.invest > i{background:linear-gradient(90deg, var(--blue), #9cbed4);}
+.brk-row-bar.refund > i{background:linear-gradient(90deg, var(--ember), var(--ember-2));}
+.brk-row-foot{
+  display:flex;justify-content:space-between;align-items:baseline;
+  font-size:11px;color:var(--text-3);
+}
+.brk-delta.up{color:var(--red);}
+.brk-delta.down{color:var(--green);}
+
+/* ── Year View (calendar heatmap) ─────────────────────────── */
+.yv-months{
+  display:grid;grid-template-columns:repeat(3, 1fr);gap:12px;margin-top:6px;
+}
+.yv-month{
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:10px 8px 8px;
+}
+.yv-month-head{
+  display:flex;justify-content:space-between;align-items:baseline;
+  padding:0 4px 6px;
+}
+.yv-month-name{font-size:11px;color:var(--text-2);text-transform:uppercase;letter-spacing:.12em;font-weight:500;}
+.yv-month-net{font-family:"JetBrains Mono",monospace;font-size:10px;font-weight:500;}
+.yv-month-net.pos{color:var(--green);}
+.yv-month-net.neg{color:var(--red);}
+.yv-weekdays{
+  display:grid;grid-template-columns:repeat(7,1fr);gap:1px;
+  font-size:8px;color:var(--text-3);text-align:center;
+  padding:2px 0 3px;font-family:"JetBrains Mono",monospace;
+}
+.yv-grid{
+  display:grid;grid-template-columns:repeat(7,1fr);gap:1.5px;
+}
+.yv-cell{
+  aspect-ratio:1;border-radius:2px;border:0;background:var(--bg-3);
+  padding:0;position:relative;cursor:pointer;min-height:12px;
+  transition:transform .08s;
+}
+.yv-cell:active{transform:scale(.9);}
+.yv-cell.blank{background:transparent;pointer-events:none;}
+.yv-cell.zero{background:var(--bg-3);opacity:.5;}
+.yv-cell .yv-day{
+  position:absolute;inset:0;display:grid;place-items:center;
+  font-family:"JetBrains Mono",monospace;font-size:8px;color:rgba(255,255,255,.55);
+  font-weight:500;
+}
+/* Green buckets (positive net) */
+.yv-cell.pos.b1{background:rgba(127,176,105,.25);}
+.yv-cell.pos.b2{background:rgba(127,176,105,.45);}
+.yv-cell.pos.b3{background:rgba(127,176,105,.70);}
+.yv-cell.pos.b4{background:rgba(127,176,105,.95);}
+.yv-cell.pos.b3 .yv-day,
+.yv-cell.pos.b4 .yv-day{color:#0f1a0a;}
+/* Red buckets (negative net) */
+.yv-cell.neg.b1{background:rgba(217,119,87,.25);}
+.yv-cell.neg.b2{background:rgba(217,119,87,.45);}
+.yv-cell.neg.b3{background:rgba(217,119,87,.70);}
+.yv-cell.neg.b4{background:rgba(217,119,87,.95);}
+.yv-cell.neg.b3 .yv-day,
+.yv-cell.neg.b4 .yv-day{color:#1a0f0a;}
+
+@media (min-width: 560px){
+  .yv-months{grid-template-columns:repeat(4, 1fr);gap:16px;}
+  .yv-cell{min-height:16px;}
+  .yv-cell .yv-day{font-size:9px;}
+}
+
+/* ── Cashflow Forecast ─────────────────────────── */
+.fc-chart-wrap{
+  margin:14px 0 4px;padding:10px 4px 6px;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+}
+.fc-chart{width:100%;height:180px;display:block;}
+.fc-chart .area{fill:url(#fcgrad);}
+.fc-chart .line{fill:none;stroke:var(--ember);stroke-width:2;}
+.fc-chart .zero{stroke:var(--line-2);stroke-dasharray:3,3;stroke-width:1;}
+.fc-day{
+  padding:10px 0;border-bottom:1px solid var(--line);
+}
+.fc-day:last-child{border-bottom:0;}
+.fc-day-head{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-bottom:8px;padding:0 2px;
+}
+.fc-day-date{font-size:12px;color:var(--text-2);text-transform:uppercase;letter-spacing:.1em;font-weight:500;}
+.fc-day-net{font-family:"JetBrains Mono",monospace;font-size:12.5px;font-weight:500;}
+.fc-day-net.pos{color:var(--green);}
+.fc-day-net.neg{color:var(--amber);}
+.fc-event{
+  display:flex;align-items:center;gap:12px;
+  padding:8px 10px;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  margin-bottom:5px;
+}
+.fc-event .txn-icon{width:28px;height:28px;font-size:12px;}
+.fc-event-body{flex:1;min-width:0;}
+.fc-event-label{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fc-event-detail{font-size:11px;color:var(--text-3);margin-top:2px;}
+.fc-event-amt{font-family:"JetBrains Mono",monospace;font-size:13px;font-weight:500;flex-shrink:0;}
+.fc-event-amt.pos{color:var(--green);}
+.fc-event-amt.neg{color:var(--amber);}
+
+/* ── Merchant autocomplete (Add form) ─────────────────────────── */
+.suggest{
+  position:absolute;left:0;right:0;top:100%;z-index:20;
+  margin-top:4px;padding:4px;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);
+  box-shadow:0 10px 30px -8px rgba(0,0,0,.5);
+  display:none;max-height:240px;overflow-y:auto;
+  -webkit-overflow-scrolling:touch; /* FIX(v1.2) */
+}
+.suggest.open{display:block;}
+.suggest-row{
+  display:flex;align-items:center;gap:10px;
+  width:100%;padding:10px 12px;
+  background:transparent;border:0;border-radius:6px;
+  text-align:left;color:var(--text);
+  transition:background .1s;
+}
+.suggest-row:hover,
+.suggest-row:active{background:var(--bg-3);}
+.suggest-name{
+  flex:1;min-width:0;font-size:13.5px;font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.suggest-meta{
+  font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.08em;
+  flex-shrink:0;white-space:nowrap;max-width:50%;overflow:hidden;text-overflow:ellipsis;
+}
+.suggest-count{
+  font-family:"JetBrains Mono",monospace;font-size:10px;
+  color:var(--text-3);background:var(--bg-3);padding:2px 6px;border-radius:999px;flex-shrink:0;
+}
+
+</style>
+<body>
+
+<div class="splash" id="splash"><div class="mark">Ledger.</div></div>
+
+<header class="appbar">
+  <h1>Ledger<span class="dot">.</span></h1>
+  <div class="month">
+    <button class="month-pick" id="monthPick"></button>
+  </div>
+</header>
+
+<main>
+  <!-- HOME / DASHBOARD -->
+  <section class="view active" id="view-home" data-view="home"></section>
+
+  <!-- ADD -->
+  <section class="view" id="view-add" data-view="add"></section>
+
+  <!-- BILLS -->
+  <section class="view" id="view-bills" data-view="bills"></section>
+
+  <!-- TRANSACTIONS -->
+  <section class="view" id="view-txns" data-view="txns"></section>
+
+  <!-- DEBTS -->
+  <section class="view" id="view-debts" data-view="debts"></section>
+
+  <!-- MORE -->
+  <section class="view" id="view-more" data-view="more"></section>
+</main>
+
+<nav class="tabs" id="tabs">
+  <button class="tab" data-go="home" aria-current="page">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 11l9-7 9 7v9a1 1 0 01-1 1h-5v-7h-6v7H4a1 1 0 01-1-1z"/></svg>
+    Home
+  </button>
+  <button class="tab" data-go="bills">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>
+    Bills
+  </button>
+  <button class="tab add" data-go="add">
+    <span class="fab">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+    </span>
+    Add
+  </button>
+  <button class="tab" data-go="txns">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+    Activity
+  </button>
+  <button class="tab" data-go="more">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></svg>
+    More
+  </button>
+</nav>
+
+<div class="sheet-backdrop" id="backdrop"></div>
+<div class="sheet" id="sheet"><div class="sheet-handle"></div><div id="sheetBody"></div></div>
+<div class="toast" id="toast"></div>
+
+<!-- SheetJS for xlsx import/export — vendored locally (v2.9.1) so export/
+     import/reconcile work offline and no third-party CDN can inject code
+     into a page that holds financial data. Deferred: XLSX is only used
+     inside event handlers, never during boot. -->
+<script src="js/vendor/xlsx.full.min.js" defer></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

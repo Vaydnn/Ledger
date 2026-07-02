@@ -1,0 +1,7 @@
+node_modules/
+
+# Real financial data must never land in this public repo.
+# Backups/exports produced by the app match these patterns.
+ledger-backup-*.json
+ledger-export-*.xlsx
+PRIVATE_*
