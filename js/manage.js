@@ -5,7 +5,7 @@
    ============================================================ */
 
 import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, toLocalISO, uid, toast, esc, round2 } from './util.js';
-import { state, STORES, DATA_STORES, dbPut, dbDel, dbClear, dbBulkPut, seedFromJSON, loadState } from './db.js';
+import { state, STORES, DATA_STORES, dbPut, dbDel, dbClear, dbBulkPut, seedFromJSON, loadState, saveFlags } from './db.js';
 import { invalidateMerchantCache } from './merchants.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { cascadeBalances } from './balances.js';
@@ -379,7 +379,40 @@ export async function exportXLSX(){
 
   const date = today();
   XLSX.writeFile(wb, `ledger-export-${date}.xlsx`);
+  await markBackedUp(); // NEW(v2.9.2): a full xlsx export counts as a backup
   toast('Exported');
+}
+
+/* ── NEW(v2.9.2): backup age tracking + nudge ────────────────────────
+   The entire ledger lives in one IndexedDB. Backups existed but their
+   staleness was invisible — this stamps every export, shows the age in
+   the More footer, and nudges (at most once a week) when the newest
+   backup is 30+ days old or there has never been one. */
+export async function markBackedUp(){
+  state.flags.lastBackupAt = Date.now();
+  await saveFlags();
+}
+
+export function backupAgeLabel(){
+  const last = state.flags.lastBackupAt;
+  if (!last) return 'no backup yet';
+  const days = Math.floor((Date.now() - last) / 86400000);
+  if (days === 0) return 'backed up today';
+  return `last backup ${days}d ago`;
+}
+
+export async function maybeBackupNudge(){
+  if (!state.transactions.length) return;
+  const last = state.flags.lastBackupAt || 0;
+  const ageDays = (Date.now() - last) / 86400000;
+  if (last && ageDays < 30) return;
+  const lastNudge = state.flags.lastBackupNudge || 0;
+  if (Date.now() - lastNudge < 7 * 86400000) return;
+  state.flags.lastBackupNudge = Date.now();
+  await saveFlags();
+  setTimeout(() => toast(last
+    ? `Backup is ${Math.floor(ageDays)} days old — More → Backup as JSON`
+    : 'No backup yet — More → Backup as JSON'), 1400);
 }
 
 export async function importXLSX(onImported){
@@ -589,6 +622,7 @@ export async function backupJSON(){
   const a = document.createElement('a');
   a.href = url; a.download = `ledger-backup-${today()}.json`; a.click();
   URL.revokeObjectURL(url);
+  await markBackedUp(); // NEW(v2.9.2)
   toast('Backup downloaded');
 }
 

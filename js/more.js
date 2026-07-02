@@ -11,7 +11,7 @@ import { renderNetWorthChart, openNetWorthSheet } from './networth.js';
 import { openSubscriptionsSheet } from './subscriptions.js';
 import { openBudgetsSheet } from './budgets.js';
 import { openBalancesSheet } from './balances.js';
-import { openAccountsSheet, openCategoriesSheet, openAboutSheet, exportXLSX, importXLSX, backupJSON, restoreJSON, resetData, recomputeAllBalances } from './manage.js';
+import { openAccountsSheet, openCategoriesSheet, openAboutSheet, exportXLSX, importXLSX, backupJSON, restoreJSON, resetData, recomputeAllBalances, backupAgeLabel } from './manage.js';
 import { openBreakdownSheet } from './breakdown.js';
 import { openYearViewSheet } from './yearview.js';
 import { openForecastSheet } from './forecast.js';
@@ -114,6 +114,7 @@ export function renderMore(){
 
     <div style="text-align:center;margin-top:24px;color:var(--text-3);font-size:11px;letter-spacing:.1em;text-transform:uppercase;">
       Ledger v${APP_VERSION} · ${state.transactions.length} txns · ${state.accounts.length} accounts · ${state.bills.length} bills
+      <br /><span style="letter-spacing:.06em;">${backupAgeLabel()}</span>
     </div>
   `;
   $('#add-nw', v).addEventListener('click', () => openNetWorthSheet(renderMore));

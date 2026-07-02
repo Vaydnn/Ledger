@@ -1,8 +1,36 @@
-# Ledger PWA · v2.9.1
+# Ledger PWA · v2.9.2
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
 **Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).**
+
+## What's new in v2.9.2 — day-to-day QoL release
+
+### Reconcile: add missing transactions without leaving the sheet
+
+The old flow bounced through the full Add form and landed on Home — a More → Reconcile → re-run round trip **per missing row**. Now:
+
+- **Add** on a statement-only row logs it instantly, right in the sheet: date/amount/account come from the statement, category from merchant memory. The diff re-runs in place and the row jumps to Matched. Undo on the toast.
+- **Tap the row** (instead of Add) to pick the category first — still without leaving the sheet.
+- **Add all N with smart categories** for statement-heavy months, with a single bulk Undo.
+- CC-payment rows keep the full-form flow (they need a pay-from account).
+
+### Faster logging & browsing
+
+- **Category chips on the Add form** — your ~6 most-used categories for the current type as one-tap chips; the picker stays for the long tail.
+- **Recent card on Home** — last 5 transactions, tap to view/edit/delete without switching to Activity.
+- **Swipe left/right on Home** to step a month forward/back (edge touches ignored so the Android back gesture doesn't collide; picker stays for jumping far).
+- **Tap an account row on Home** → Activity pre-filtered to that account.
+
+### Safety & polish
+
+- **Backup age is visible**: exports (JSON and xlsx) stamp `lastBackupAt`, the More footer shows "last backup Nd ago", and a toast nudges (at most weekly) when the newest backup is 30+ days old or missing.
+- **Duplicate insight is dismissable** — a × remembers the pair, so a false positive (two real identical charges) no longer pins the top insight slot all month.
+- **Undo instead of confirm()** for deleting transactions, bills, goals, and debt plans — immediate action plus an Undo toast (transactions additionally keep their 30-day trash). Big destructive operations (reset, restore, import, empty trash) keep their confirmations.
+
+---
+
+# Ledger PWA · v2.9.1 (previous)
 
 ## What's new in v2.9.1 — integrity & privacy release
 

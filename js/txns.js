@@ -7,6 +7,7 @@
 import { $, $$, fmt, monthKey, monthName, parseLocalDate, today, toast, toastAction, parseAmount, toCents, esc, haptic } from './util.js';
 import { state, dbDel, dbPut } from './db.js';
 import { openSheet, closeSheet } from './sheet.js';
+import { renderCurrent } from './app.js';
 import { startEdit } from './add.js';
 import { invalidateMerchantCache } from './merchants.js';
 import { cascadeForChange } from './balances.js';
@@ -255,9 +256,10 @@ export function openTxnSheet(id){
   openSheet();
   $('#sh-edit').addEventListener('click', () => { closeSheet(); startEdit(t); });
   $('#sh-del').addEventListener('click', async () => {
-    if (!confirm('Delete this transaction?')) return;
     // NEW(v2.0): soft delete — the txn moves to the trash store (30-day
     // retention, restorable from More → Trash) and the toast offers Undo.
+    // FIX(v2.9.2): the confirm() popup on top of that was double safety —
+    // trash + Undo already make this fully reversible, so it's gone.
     await trashTxn(t);
     await dbDel('transactions', t.id);
     state.transactions = state.transactions.filter(x => x.id !== t.id);
@@ -277,10 +279,13 @@ export function openTxnSheet(id){
     }
     invalidateMerchantCache();
     haptic([10,30,10]); /* NEW(v2.2): destructive pattern */
-    closeSheet(); renderTxns();
+    // FIX(v2.9.2): renderCurrent, not renderTxns — this sheet can now open
+    // from the Home "Recent" card, and re-rendering the hidden Activity view
+    // would have left Home showing the deleted transaction.
+    closeSheet(); renderCurrent();
     toastAction('Deleted', 'Undo', async () => {
       await restoreTxn({ ...t, deletedAt: Date.now() });
-      renderTxns();
+      renderCurrent();
       toast('Restored');
     });
   });

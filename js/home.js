@@ -6,11 +6,12 @@
    insights (new in v1.1.0).
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alphaSort, sumMoney, round2, toCents, fromCents, esc, today } from './util.js';
-import { state, dbPut, saveFlags } from './db.js';
+import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alphaSort, sumMoney, round2, toCents, fromCents, esc, today, haptic } from './util.js';
+import { state, dbPut, saveFlags, saveSelected } from './db.js';
 import { balanceAt, monthTotals } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
-import { navigate } from './app.js';
+import { navigate, renderAll } from './app.js';
+import { txnHTML, openTxnSheet, txnFilters, resetRenderCap } from './txns.js';
 import { billRowHTML, payBill, openBillSheet, getBillDueDay, computeRealAvailable } from './bills.js';
 import { renderInsightsCard } from './insights.js';
 import { addForm } from './add.js';                 // NEW(v2.4)
@@ -18,7 +19,42 @@ import { renderPaceCard } from './pace.js';         // NEW(v2.6)
 import { openBudgetsSheet } from './budgets.js';    // NEW(v2.7.1)
 import { renderGoalsCard } from './goals.js'; // NEW(v2.0)
 
+/* ── NEW(v2.9.2): swipe left/right on Home to change month ──────────────
+   The picker sheet stays for jumping far; a swipe handles the constant
+   "how did last month look" hop. Guards: edge touches are ignored (Android
+   back-gesture zone), and the swipe must be decisively horizontal so it
+   never fights vertical scrolling. Wired once — the listener lives on the
+   persistent #view-home container, not the re-rendered contents. */
+let _swipeWired = false;
+function wireMonthSwipe(){
+  if (_swipeWired) return;
+  _swipeWired = true;
+  const v = $('#view-home');
+  if (!v || !('ontouchstart' in window)) return;
+  let sx = 0, sy = 0, tracking = false;
+  v.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    tracking = t.clientX > 24 && t.clientX < window.innerWidth - 24;
+    sx = t.clientX; sy = t.clientY;
+  }, { passive: true });
+  v.addEventListener('touchend', async (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    let { year, month } = state.selected;
+    if (dx < 0){ month++; if (month > 12){ month = 1; year++; } }
+    else { month--; if (month < 1){ month = 12; year--; } }
+    state.selected = { year, month };
+    haptic(6);
+    await saveSelected();
+    renderAll();
+  }, { passive: true });
+}
+
 export function renderHome(){
+  wireMonthSwipe();
   const { year, month } = state.selected;
   const tot = monthTotals(year, month);
   const ym = `${year}-${String(month).padStart(2,'0')}`;
@@ -116,6 +152,13 @@ export function renderHome(){
 
     ${renderInsightsCard(year, month)}
 
+    ${state.transactions.length ? `
+      <div class="card" style="margin-top:14px;">
+        <h3 class="card-title">Recent</h3>
+        ${state.transactions.slice(0, 5).map(t => txnHTML(t)).join('')}
+      </div>
+    ` : ''}
+
     ${upcomingPreview.length ? `
       <div class="card" style="margin-top:14px;">
         <h3 class="card-title">Upcoming Bills <span class="pill">${unpaidBills.length} unpaid</span></h3>
@@ -140,7 +183,7 @@ export function renderHome(){
         const isDebt = a.type === 'Credit Card' || a.type === 'Loan';
         const cls = a.type === 'Credit Card' ? 'cc' : (a.type === 'Loan' ? 'loan' : 'checking');
         return `
-          <div class="acct-row">
+          <div class="acct-row" data-acct="${esc(a.name)}" style="cursor:pointer;">
             <div class="left">
               <div class="acct-bullet ${cls}"></div>
               <div style="min-width:0;">
@@ -183,6 +226,27 @@ export function renderHome(){
       navigate('add');
       requestAnimationFrame(() => { const a = $('#f-amount'); if (a){ a.focus(); } });
     });
+  }));
+
+  // NEW(v2.9.2): recent transactions — tap to view/edit without leaving Home.
+  $$('.txn', v).forEach(el => el.addEventListener('click', () => openTxnSheet(el.dataset.id)));
+
+  // NEW(v2.9.2): tap an account row → Activity pre-filtered to that account.
+  $$('.acct-row[data-acct]', v).forEach(el => el.addEventListener('click', () => {
+    txnFilters.search = el.dataset.acct;
+    txnFilters.type = 'all';
+    resetRenderCap();
+    navigate('txns');
+  }));
+
+  // NEW(v2.9.2): dismiss a duplicate-suspect insight (false positives used
+  // to pin the top insight slot for the whole month with no way out).
+  $$('.ins-dismiss', v).forEach(b => b.addEventListener('click', async () => {
+    const list = state.flags.dismissedDups || [];
+    if (!list.includes(b.dataset.key)) list.push(b.dataset.key);
+    state.flags.dismissedDups = list.slice(-50);
+    await saveFlags();
+    renderHome();
   }));
 
   $('#go-bills', v)?.addEventListener('click', () => navigate('bills'));

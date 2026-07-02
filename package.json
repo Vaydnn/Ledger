@@ -1,6 +1,6 @@
 {
   "name": "ledger",
-  "version": "2.9.1",
+  "version": "2.9.2",
   "private": true,
   "type": "module",
   "description": "Personal finance PWA — vanilla JS, IndexedDB, offline-first. Data never leaves the device.",

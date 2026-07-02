@@ -537,10 +537,19 @@ export function openBillSheet(billId){
     $('#bf-save').addEventListener('click', save);
     if (existing){
       $('#bf-del').addEventListener('click', async () => {
-        if (!confirm('Delete this bill? Past payment transactions are preserved.')) return;
+        // FIX(v2.9.2): immediate delete + Undo toast instead of confirm().
+        // Past payment transactions are preserved either way.
+        const removed = { ...existing, paidMonths: { ...(existing.paidMonths || {}) } };
         await dbDel('bills', existing.id);
         state.bills = state.bills.filter(b => b.id !== existing.id);
-        closeSheet(); renderCurrent(); toast('Deleted');
+        closeSheet(); renderCurrent();
+        toastAction(`Deleted "${removed.name}"`, 'Undo', async () => {
+          await dbPut('bills', removed);
+          state.bills.push(removed);
+          state.bills.sort((a,b) => (a.dueDay||0) - (b.dueDay||0));
+          renderCurrent();
+          toast('Bill restored');
+        });
       });
     }
   }

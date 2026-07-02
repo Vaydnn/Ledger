@@ -10,7 +10,7 @@
 
 import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, haptic } from './util.js';
 import { state, loadState, saveSelected, seedFromJSON, TAB_ID, purgeTombstones, scrubLegacyData } from './db.js';
-import { restoreJSON } from './manage.js';
+import { restoreJSON, maybeBackupNudge } from './manage.js';
 import { initSheet, openSheet, closeSheet, isSheetOpen } from './sheet.js';
 import { renderHome } from './home.js';
 import { renderBills } from './bills.js';
@@ -221,6 +221,7 @@ async function init(){
   scrubLegacyData().catch(e => console.warn('Scrub failed', e)); // NEW(v2.3): one-time
   setupTabSync();                    // NEW(v2.3)
   setupErrorSurfacing();             // NEW(v2.3)
+  maybeBackupNudge().catch(e => console.warn('Backup nudge failed', e)); // NEW(v2.9.2)
   // NEW(v2.3.1): ask the browser to exempt our IndexedDB from eviction under
   // storage pressure. Best-effort — installed PWAs are usually granted
   // silently. Without this, a storage-hungry device can wipe the ledger.

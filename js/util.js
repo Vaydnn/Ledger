@@ -3,12 +3,11 @@
    No imports. Every other module depends on this one.
    ============================================================ */
 
-// v2.9.1 — integrity & privacy release: synthetic seed (real data removed
-// from the repo), explicit first-run choice instead of silent auto-seed,
-// year-boundary balance carryover fix, parseAmount everywhere, vendored
-// SheetJS + cache-only SW with an update toast, unified Real Available,
-// soft-delete on bill unpay, restore preserves settings, memoized analytics.
-export const APP_VERSION = '2.9.1';
+// v2.9.2 — day-to-day QoL release: reconcile adds missing transactions
+// inline (single / all / pick-category, with Undo), one-tap category chips
+// on the Add form, Recent card + month swipe + tappable accounts on Home,
+// backup age reminder, dismissable duplicate insight, undo-toast deletes.
+export const APP_VERSION = '2.9.2';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data

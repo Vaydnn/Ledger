@@ -2,7 +2,7 @@
    debts.js — Debts & Loans view + debt plan editor sheet.
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthName, today, parseLocalDate, daysBetween, clamp, uid, toast, esc, toCents, fromCents, round2, parseAmount } from './util.js';
+import { $, $$, fmt, fmtShort, monthName, today, parseLocalDate, daysBetween, clamp, uid, toast, toastAction, esc, toCents, fromCents, round2, parseAmount } from './util.js';
 import { state, dbPut, dbDel, saveFlags } from './db.js';
 import { balanceAt, balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
@@ -387,10 +387,17 @@ function openPlanSheet(acctName){
     });
     if (existing){
       $('#dp-del').addEventListener('click', async () => {
-        if (!confirm('Delete this plan?')) return;
+        // FIX(v2.9.2): immediate delete + Undo toast instead of confirm().
+        const removed = { ...existing };
         await dbDel('debtPlans', existing.id);
         state.debtPlans = state.debtPlans.filter(d => d.id !== existing.id);
-        closeSheet(); renderDebts(); toast('Plan deleted');
+        closeSheet(); renderDebts();
+        toastAction(`Deleted plan for ${removed.account}`, 'Undo', async () => {
+          await dbPut('debtPlans', removed);
+          state.debtPlans.push(removed);
+          renderDebts();
+          toast('Plan restored');
+        });
       });
     }
   }

@@ -12,7 +12,7 @@
    and a full management sheet from the More menu.
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, clamp, uid, toast, parseAmount, parseLocalDate, today, daysBetween, esc, haptic } from './util.js';
+import { $, $$, fmt, fmtShort, clamp, uid, toast, toastAction, parseAmount, parseLocalDate, today, daysBetween, esc, haptic } from './util.js';
 import { state, dbPut, dbDel } from './db.js';
 import { balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
@@ -208,12 +208,19 @@ function openGoalEditor(id, onChanged){
       openGoalsSheet(onChanged);
     });
     $('#ge-del')?.addEventListener('click', async () => {
-      if (!confirm(`Delete the "${existing.name}" goal?`)) return;
+      // FIX(v2.9.2): immediate delete + Undo toast instead of confirm().
+      const removed = { ...existing };
       await dbDel('goals', existing.id);
       state.goals = state.goals.filter(g => g.id !== existing.id);
-      toast('Goal deleted');
       if (typeof onChanged === 'function') onChanged();
       openGoalsSheet(onChanged);
+      toastAction(`Deleted "${removed.name}"`, 'Undo', async () => {
+        await dbPut('goals', removed);
+        state.goals.push(removed);
+        state.goals.sort((a,b) => String(a.name).localeCompare(String(b.name)));
+        if (typeof onChanged === 'function') onChanged();
+        openGoalsSheet(onChanged);
+      });
     });
     $('#ge-back').addEventListener('click', () => openGoalsSheet(onChanged));
   }

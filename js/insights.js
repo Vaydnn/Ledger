@@ -125,6 +125,9 @@ function detectDuplicateSuspects(year, monthIdx){
   const ym = `${year}-${String(monthIdx).padStart(2,'0')}`;
   const billIds = new Set();
   for (const b of state.bills) for (const id of Object.values(b.paidMonths || {})) billIds.add(id);
+  // NEW(v2.9.2): dismissed pairs stay dismissed — a false positive (two real
+  // identical charges) used to pin the top insight slot for the whole month.
+  const dismissed = new Set(state.flags.dismissedDups || []);
   const rows = state.transactions
     .filter(t => t.date && t.date.slice(0,7) === ym && t.type === 'Expense' && !billIds.has(t.id) && t.amount >= 5)
     .sort((a,b) => a.date.localeCompare(b.date));
@@ -137,10 +140,12 @@ function detectDuplicateSuspects(year, monthIdx){
       // the rest of the app standardized on local dates for exactly this.
       const gap = Math.abs(daysBetween(a.date, b.date));
       if (gap > 2) continue;
+      const key = [a.id, b.id].sort().join('|');
+      if (dismissed.has(key)) continue;
       // identical descriptions on the SAME day are plausibly real (two coffees);
       // same amount 1-2 days apart with matching or empty descriptions is the
       // classic double-log signature
-      pairs.push({ a, b, gap });
+      pairs.push({ a, b, gap, key });
     }
   }
   return pairs;
@@ -304,7 +309,9 @@ function detectBurnRate(year, monthIdx){
 let _insCache = null;
 let _insKey = '';
 export function detectInsights(year, monthIdx, max=3){
-  const key = `${dataVersion.n}|${year}-${monthIdx}|${max}|${new Date().toDateString()}`;
+  // Cache key includes the dismissed-dup count: dismissing writes to meta
+  // (unversioned by design), so it wouldn't bump dataVersion on its own.
+  const key = `${dataVersion.n}|${year}-${monthIdx}|${max}|${(state.flags.dismissedDups || []).length}|${new Date().toDateString()}`;
   if (_insCache && _insKey === key) return _insCache;
   const all = [];
 
@@ -412,6 +419,7 @@ export function detectInsights(year, monthIdx, max=3){
     const d = dups[0];
     all.push({
       kind: 'dup-suspect',
+      _dismissKey: d.key, // NEW(v2.9.2): renders a × that remembers the pair
       title: `Possible duplicate: 2× ${fmt(d.a.amount)} on ${esc(d.a.account)}`,
       detail: `${d.a.date} and ${d.b.date}${d.a.description ? ' · ' + esc(String(d.a.description)) : ''} — same amount ${d.gap === 0 ? 'same day' : Math.round(d.gap) + 'd apart'}. Real, or logged twice?`,
       tone: 'warn',
@@ -515,6 +523,7 @@ export function renderInsightsCard(year, monthIdx){
             <div class="insight-title">${i.title}</div>
             <div class="insight-detail">${i.detail}</div>
           </div>
+          ${i._dismissKey ? `<button class="ins-dismiss" type="button" data-key="${i._dismissKey}" aria-label="Dismiss" style="background:none;border:none;color:var(--text-3);font-size:17px;line-height:1;padding:2px 6px;cursor:pointer;flex-shrink:0;align-self:flex-start;">×</button>` : ''}
         </div>
       `).join('')}
     </div>

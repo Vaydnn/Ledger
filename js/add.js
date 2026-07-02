@@ -104,6 +104,22 @@ export function renderAdd(){
     return 'From';
   })();
 
+  // NEW(v2.9.2): one-tap category chips — your most-used categories for the
+  // current type, so the highest-frequency action in the app skips the
+  // picker sheet entirely. The picker stays for the long tail.
+  const topCats = (() => {
+    const counts = {};
+    for (const t of state.transactions){
+      if (t.type !== addForm.type || !t.category) continue;
+      counts[t.category] = (counts[t.category] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([c]) => c)
+      .filter(c => catList.includes(c))
+      .slice(0, 6);
+  })();
+
   v.innerHTML = `
     <div class="type-pills">
       ${types.map(t => `<button class="type-pill" data-type="${t}" aria-pressed="${addForm.type===t}">${t}</button>`).join('')}
@@ -127,6 +143,12 @@ export function renderAdd(){
         </button>
       </div>
     </div>
+
+    ${topCats.length > 1 ? `
+      <div class="cat-chips">
+        ${topCats.map(c => `<button type="button" class="chip cat-chip" data-cat="${esc(c)}" aria-pressed="${addForm.category === c}">${esc(c)}</button>`).join('')}
+      </div>
+    ` : ''}
 
     <div class="field">
       <label>${accountLabel}</label>
@@ -164,6 +186,13 @@ export function renderAdd(){
   }));
   $('#f-amount', v).addEventListener('input', e => addForm.amount = e.target.value);
   $('#f-date', v).addEventListener('input', e => addForm.date = e.target.value);
+
+  // NEW(v2.9.2): category chips — set and re-render (state in addForm
+  // survives the re-render, same as the pickers).
+  $$('.cat-chip', v).forEach(ch => ch.addEventListener('click', () => {
+    addForm.category = ch.dataset.cat;
+    renderAdd();
+  }));
 
   // Pickers — CLOSE the sheet explicitly because these are opened from a
   // view (not from inside a sheet), so the sheet backdrop must go away

@@ -9,7 +9,8 @@
                         tolerance window (default ±3 days, adjustable
                         — CC posting dates drift from purchase dates)
      ⚠ Statement only — on the statement, missing from the ledger
-                        → one tap pre-fills the Add form
+                        → one tap adds it right here (v2.9.2); tap the
+                        row to pick the category; payments use the form
      ⚠ Ledger only    — logged here, not on the statement
                         → tap to open the transaction
 
@@ -23,8 +24,8 @@
    debit/credit pair), and description/merchant.
    ============================================================ */
 
-import { $, $$, fmt, toast, esc, toCents, fromCents, round2, toLocalISO, daysBetween, sumMoney, uid, haptic } from './util.js';
-import { state, dbPut } from './db.js';
+import { $, $$, fmt, toast, toastAction, esc, toCents, fromCents, round2, toLocalISO, daysBetween, sumMoney, uid, haptic } from './util.js';
+import { state, dbPut, dbDel } from './db.js';
 import { acctTypeMap, txnEffectsCents } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { cascadeForChange } from './balances.js';
@@ -383,6 +384,44 @@ function defaultCat(type, desc){
   return list[0] || 'Return';
 }
 
+/* ── NEW(v2.9.2): inline add for statement-only rows ─────────────────
+   Adding a missing transaction used to bounce through the full Add form
+   and land on Home — a More → Reconcile → re-run round trip PER ROW.
+   Expense/credit rows now add directly from this sheet (date, amount,
+   account from the statement; category from merchant memory) and the
+   diff re-runs in place, so the row jumps straight to Matched. Tapping
+   the ROW (not the Add button) opens a category picker first for the
+   cases where the smart default would guess wrong. CC-payment rows keep
+   the full-form flow — they need a pay-from account. */
+const isPaymentRow = (r) => /payment/i.test(r.rtype || '');
+
+async function addFromRow(r, chargeFlag, category){
+  const type = chargeFlag ? 'Expense' : 'Refund';
+  const txn = {
+    id: uid(),
+    date: r.date,
+    type,
+    account: recState.account,
+    category: category || defaultCat(type, r.desc),
+    description: (r.desc || '').trim(),
+    amount: round2(Math.abs(r.amount)),
+    fromAccount: null
+  };
+  await dbPut('transactions', txn);
+  state.transactions.push(txn);
+  state.transactions.sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  await cascadeForChange(null, txn);
+  invalidateMerchantCache();
+  return txn;
+}
+
+async function undoInlineAdd(txn){
+  await dbDel('transactions', txn.id);
+  state.transactions = state.transactions.filter(t => t.id !== txn.id);
+  await cascadeForChange(txn, null);
+  invalidateMerchantCache();
+}
+
 async function addPair(p){
   const mk = (side, type) => ({
     id: uid(),
@@ -449,15 +488,17 @@ function renderResults(options){
 
     ${csvOnly.length ? `
       <div class="muted small" style="text-transform:uppercase;letter-spacing:.14em;margin:14px 0 8px;">On statement, not in ledger · ${fmt(csvOnlySum)}</div>
+      <div class="muted small" style="margin-bottom:8px;line-height:1.5;"><b>Add</b> logs it right here — category comes from merchant memory (edit later if it guessed wrong). Tap the row itself to pick the category first.</div>
       ${csvOnly.map((r, i) => `
-        <div class="rec-row">
+        <div class="rec-row rc-pickcat" data-i="${i}" style="cursor:pointer;">
           <div style="min-width:0;flex:1;">
-            <div style="font-size:13.5px;font-weight:500;">${fmt(Math.abs(r.amount))} <span class="muted small">· ${isCharge(r) ? 'charge' : 'credit'}${r.pending ? ' · pending' : ''}</span></div>
+            <div style="font-size:13.5px;font-weight:500;">${fmt(Math.abs(r.amount))} <span class="muted small">· ${isCharge(r) ? 'charge' : 'credit'}${r.pending ? ' · pending' : ''}${isPaymentRow(r) ? ' · payment' : ''}</span></div>
             <div class="muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.date}${r.desc ? ' · ' + esc(r.desc) : ''}</div>
           </div>
           <button class="btn secondary rc-add" data-i="${i}" style="width:auto;padding:8px 14px;font-size:12px;flex-shrink:0;">Add</button>
         </div>
       `).join('')}
+      ${csvOnly.filter(r => !isPaymentRow(r)).length > 1 ? `<button class="btn ghost" id="rc-add-all" style="margin-top:4px;margin-bottom:6px;font-size:12.5px;padding:10px;">Add all ${csvOnly.filter(r => !isPaymentRow(r)).length} with smart categories</button>` : ''}
     ` : ''}
 
     ${canceled.length ? `
@@ -497,27 +538,65 @@ function renderResults(options){
     </div>
   `;
 
-  $$('.rc-add').forEach(b => b.addEventListener('click', () => {
+  // NEW(v2.9.2): one-tap inline add (see addFromRow header). Payment rows
+  // still go through the full Add form — they need a pay-from account.
+  $$('.rc-add').forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation(); // the row underneath opens the category picker
     const r = csvOnly[Number(b.dataset.i)];
     if (!r) return;
-    // Pre-fill the Add form. The export's Type column wins when it says
-    // payment (→ CC Payment, with the form's default source account);
-    // otherwise charges → Expense, credits → Refund.
-    const isPay = /payment/i.test(r.rtype || '');
-    Object.assign(addForm, {
-      type: isPay ? 'CC Payment' : (isCharge(r) ? 'Expense' : 'Refund'),
-      date: r.date,
-      account: recState.account,
-      category: null,
-      description: isPay ? '' : (r.desc || ''),
-      amount: Math.abs(r.amount).toFixed(2),
-      fromAccount: null,
-      editingId: null
+    if (isPaymentRow(r)){
+      Object.assign(addForm, {
+        type: 'CC Payment',
+        date: r.date,
+        account: recState.account,
+        category: null,
+        description: '',
+        amount: Math.abs(r.amount).toFixed(2),
+        fromAccount: null,
+        editingId: null
+      });
+      closeSheet();
+      navigate('add');
+      toast('Pre-filled from statement');
+      return;
+    }
+    const txn = await addFromRow(r, isCharge(r));
+    haptic(15);
+    renderResults(options);
+    toastAction(`Added ${fmt(txn.amount)} · ${txn.category}`, 'Undo', async () => {
+      await undoInlineAdd(txn);
+      renderResults(options);
     });
-    closeSheet();
-    navigate('add');
-    toast('Pre-filled from statement');
   }));
+  // Row tap: pick the category yourself, still without leaving the sheet.
+  $$('.rc-pickcat').forEach(el => el.addEventListener('click', () => {
+    const r = csvOnly[Number(el.dataset.i)];
+    if (!r || isPaymentRow(r)) return;
+    const type = isCharge(r) ? 'Expense' : 'Refund';
+    const cats = state.categories[type] || [];
+    if (!cats.length) return;
+    openPicker(`Category · ${r.desc ? r.desc.slice(0, 30) : fmt(Math.abs(r.amount))}`, cats, defaultCat(type, r.desc), async (cat) => {
+      const txn = await addFromRow(r, isCharge(r), cat);
+      haptic(15);
+      renderResults(options);
+      toastAction(`Added ${fmt(txn.amount)} · ${txn.category}`, 'Undo', async () => {
+        await undoInlineAdd(txn);
+        renderResults(options);
+      });
+    });
+  }));
+  $('#rc-add-all')?.addEventListener('click', async () => {
+    const rows = csvOnly.filter(r => !isPaymentRow(r));
+    if (!confirm(`Add ${rows.length} transactions with categories from merchant memory?\n\nDates, amounts, and descriptions come from the statement. Edit any category later from Activity.`)) return;
+    const added = [];
+    for (const r of rows) added.push(await addFromRow(r, isCharge(r)));
+    haptic(15);
+    renderResults(options);
+    toastAction(`Added ${added.length} transactions`, 'Undo', async () => {
+      for (const t of added) await undoInlineAdd(t);
+      renderResults(options);
+    });
+  });
   $$('.rc-jump').forEach(el => el.addEventListener('click', () => {
     openTxnSheet(el.dataset.id); // re-uses the sheet; Back not preserved by design
   }));

@@ -70,5 +70,24 @@ if (fixAll){ fixAll.click(); await tick(500); }
 const statsAfter = $$('.rec-stat .v').map(e => e.textContent.trim());
 check('after fix-all: no loose remainder', !String(statsAfter[0]).includes('+'), statsAfter[0]);
 
+// NEW(v2.9.2): inline add — clicking Add on a statement-only row logs the
+// transaction right in the sheet (no Add-form round trip) and the diff
+// re-runs in place, so the row migrates to Matched.
+const before = state.transactions.length;
+let addBtn = $('.rc-add');
+check('inline Add button present', !!addBtn);
+addBtn.click(); await tick(400);
+check('transaction added inline', state.transactions.length === before + 1, `${before} → ${state.transactions.length}`);
+const stats2 = $$('.rec-stat .v').map(e => e.textContent.trim());
+check('statement-only count dropped', parseInt(stats2[1]) === fakeCount - 1, stats2[1]);
+addBtn = $('.rc-add');
+if (addBtn){ addBtn.click(); await tick(400); }
+check('both fakes now in the ledger',
+  state.transactions.some(t => t.description === 'FAKE WINGS') &&
+  state.transactions.some(t => t.description === 'FAKE GAME'));
+const stats3 = $$('.rec-stat .v').map(e => e.textContent.trim());
+check('statement-only cleared after inline adds', parseInt(stats3[1]) === 0, stats3[1]);
+check('inline adds got a category', state.transactions.filter(t => t.description.startsWith('FAKE')).every(t => !!t.category));
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('reconcile e2e tests');
