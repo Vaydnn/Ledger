@@ -11,6 +11,13 @@ import { openSheet, openPicker } from './sheet.js';
 
 const budgetsState = { budgetId: null };
 
+// FIX(v2.9.3): the new-budget form's state lives here, not in the DOM.
+// The Type/Category pickers replace #sheetBody while open, so the old
+// callbacks were writing the picked value onto a DETACHED form element and
+// never re-rendering — the user was stranded on the picker with the
+// selection going nowhere. Same form-state pattern as the bill editor.
+const newBudget = { type: 'Expense', category: '', amount: '' };
+
 export function openBudgetsSheet(){
   const yr = state.selected.year;
   const yearBudgets = state.budgets.filter(b => b.year === yr);
@@ -107,20 +114,20 @@ function renderBudgetsSheet(){
     <div class="row-2">
       <div class="field">
         <label>Type</label>
-        <button class="input picker-btn" id="bn-type-pick" type="button" data-val="Expense">
-          <span class="picker-val">Expense</span>
+        <button class="input picker-btn" id="bn-type-pick" type="button">
+          <span class="picker-val">${newBudget.type}</span>
           <span class="picker-chev">▾</span>
         </button>
       </div>
       <div class="field">
         <label>Category</label>
-        <button class="input picker-btn" id="bn-cat-pick" type="button" data-val="">
-          <span class="picker-val">Tap to pick…</span>
+        <button class="input picker-btn" id="bn-cat-pick" type="button">
+          <span class="picker-val">${newBudget.category ? esc(newBudget.category) : 'Tap to pick…'}</span>
           <span class="picker-chev">▾</span>
         </button>
       </div>
     </div>
-    <div class="field"><label>Monthly Amount (applies to all 12 months)</label><input class="input" id="b-new-amt" type="number" step="0.01" placeholder="0.00" /></div>
+    <div class="field"><label>Monthly Amount (applies to all 12 months)</label><input class="input" id="b-new-amt" type="text" inputmode="decimal" placeholder="0.00" value="${esc(newBudget.amount)}" /></div>
     <button class="btn" id="b-new-save">Add Budget</button>
   `;
 
@@ -197,52 +204,46 @@ function renderBudgetsSheet(){
     openBudgetsSheet();
   });
 
-  // Type picker (new budget form) — bug fix: no closeSheet, just update inline
+  // New-budget form — FIX(v2.9.3): pickers now update `newBudget` and
+  // re-render the sheet (the picker replaces #sheetBody while open, so
+  // anything less left the user stranded on the picker list).
+  $('#b-new-amt').addEventListener('input', e => newBudget.amount = e.target.value);
   $('#bn-type-pick').addEventListener('click', () => {
-    const typePicker = $('#bn-type-pick');
-    openPicker('Budget Type', ['Expense','Income','Investment'], typePicker.dataset.val, (val) => {
-      // Re-render the whole sheet to keep UI consistent (category resets to picker state)
-      typePicker.dataset.val = val;
-      $('.picker-val', typePicker).textContent = val;
-      const catPicker = $('#bn-cat-pick');
-      catPicker.dataset.val = '';
-      $('.picker-val', catPicker).textContent = 'Tap to pick…';
+    openPicker('Budget Type', ['Expense','Income','Investment'], newBudget.type, (val) => {
+      newBudget.type = val;
+      newBudget.category = ''; // category lists differ per type
+      renderBudgetsSheet();
     });
   });
-
-  // Category picker (new budget form)
   $('#bn-cat-pick').addEventListener('click', () => {
-    const typeVal = $('#bn-type-pick').dataset.val || 'Expense';
-    const catList = state.categories[typeVal] || [];
+    const catList = state.categories[newBudget.type] || [];
     if (catList.length === 0){
-      toast(`No ${typeVal} categories defined`);
+      toast(`No ${newBudget.type} categories defined`);
       return;
     }
-    const catPicker = $('#bn-cat-pick');
-    openPicker(`${typeVal} Category`, catList, catPicker.dataset.val || null, (val) => {
-      catPicker.dataset.val = val;
-      $('.picker-val', catPicker).textContent = val;
+    openPicker(`${newBudget.type} Category`, catList, newBudget.category || null, (val) => {
+      newBudget.category = val;
+      renderBudgetsSheet();
     });
   });
 
   // Save new budget
   $('#b-new-save').addEventListener('click', async () => {
-    const typeVal = $('#bn-type-pick').dataset.val || 'Expense';
-    const catVal = $('#bn-cat-pick').dataset.val;
-    const amtRaw = parseAmount($('#b-new-amt').value); // FIX(v2.9.1): comma-safe
+    const amtRaw = parseAmount(newBudget.amount); // FIX(v2.9.1): comma-safe
     const amt = isNaN(amtRaw) ? 0 : amtRaw;
-    if (!catVal) { toast('Pick a category'); return; }
-    const exists = state.budgets.find(b => b.year === yr && b.type === typeVal && b.category === catVal);
+    if (!newBudget.category) { toast('Pick a category'); return; }
+    const exists = state.budgets.find(b => b.year === yr && b.type === newBudget.type && b.category === newBudget.category);
     if (exists){
       toast('That budget already exists — edit it above');
       return;
     }
     const amounts = {};
     monthAbbr.forEach(m => amounts[m] = amt);
-    const newB = { id:uid(), year:yr, type:typeVal, category:catVal, amounts };
+    const newB = { id:uid(), year:yr, type:newBudget.type, category:newBudget.category, amounts };
     await dbPut('budgets', newB);
     state.budgets.push(newB);
     budgetsState.budgetId = newB.id;
+    Object.assign(newBudget, { type:'Expense', category:'', amount:'' });
     openBudgetsSheet();
     toast('Budget added');
   });

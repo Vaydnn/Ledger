@@ -5,7 +5,7 @@
 // undebuggable module graph). Now the VERSION bump is the one and only
 // update mechanism: every load is a coherent snapshot of a single release,
 // and app.js shows an "update ready" toast when a new SW has installed.
-const VERSION = 'ledger-v2.9.2';
+const VERSION = 'ledger-v2.9.3';
 const CORE = [
   './',
   './index.html',

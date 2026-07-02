@@ -3,11 +3,10 @@
    No imports. Every other module depends on this one.
    ============================================================ */
 
-// v2.9.2 — day-to-day QoL release: reconcile adds missing transactions
-// inline (single / all / pick-category, with Undo), one-tap category chips
-// on the Add form, Recent card + month swipe + tappable accounts on Home,
-// backup age reminder, dismissable duplicate insight, undo-toast deletes.
-export const APP_VERSION = '2.9.2';
+// v2.9.3 — hotfix: the Add Budget form's Type/Category pickers stranded the
+// user on the picker (callbacks mutated a detached node, never re-rendered).
+// Form state moved to a module object; pickers re-render the sheet.
+export const APP_VERSION = '2.9.3';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data

@@ -1,8 +1,14 @@
-# Ledger PWA · v2.9.2
+# Ledger PWA · v2.9.3
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
 **Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).**
+
+## What's new in v2.9.3 — Add Budget hotfix
+
+Adding a new budget was broken: picking a Type or Category opened the picker **over the form in the same sheet**, and selecting an option wrote the value onto the now-replaced form and never returned — you were stranded on the picker. (Long-standing bug, not a v2.9.2 regression; the copy-forward flow masked it.) The new-budget form now keeps its state in a module object (same pattern as the bill editor), so picks re-render the form with the selection applied. New regression suite drives the full add flow: `tests/addbudget.test.mjs`.
+
+---
 
 ## What's new in v2.9.2 — day-to-day QoL release
 
