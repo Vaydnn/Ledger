@@ -3,10 +3,13 @@
    No imports. Every other module depends on this one.
    ============================================================ */
 
+// v2.10.0 — Activity search now matches fromAccount, so searching an account
+// name surfaces CC payments, transfers, loan payments, and balance transfers
+// where that account is the source — not just txns where it's the destination.
 // v2.9.3 — hotfix: the Add Budget form's Type/Category pickers stranded the
 // user on the picker (callbacks mutated a detached node, never re-rendered).
 // Form state moved to a module object; pickers re-render the sheet.
-export const APP_VERSION = '2.9.3';
+export const APP_VERSION = '2.10.0';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data

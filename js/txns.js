@@ -174,7 +174,8 @@ function renderTxnResults(){
     list = list.filter(t =>
       String(t.description ?? '').toLowerCase().includes(q) || /* FIX(v2.1): non-string descriptions */
       String(t.category ?? '').toLowerCase().includes(q) ||
-      String(t.account ?? '').toLowerCase().includes(q)
+      String(t.account ?? '').toLowerCase().includes(q) ||
+      String(t.fromAccount ?? '').toLowerCase().includes(q) /* NEW(v2.10): CC payments, transfers, etc. now match on their source account */
     );
   }
   // newest-first, capped (NEW v2.5)
