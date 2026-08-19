@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "meta": { "trackingYear": 2026, "note": "Synthetic demo data. No real financial information. Restore your own JSON backup from More → Restore to replace it." },
+  "accounts": [
+    { "name": "Demo Checking", "type": "Checking", "creditLimit": null, "active": true, "notes": "" },
+    { "name": "Demo Savings", "type": "Savings", "creditLimit": null, "active": true, "notes": "" },
+    { "name": "Demo Card", "type": "Credit Card", "creditLimit": 3000, "active": true, "notes": "Balances show amount owed" }
+  ],
+  "categories": {
+    "Expense": ["Gas", "Groceries", "Restaurants", "Rent", "Subscriptions", "Shopping", "Health", "Misc", "Utilities", "Phone Bill"],
+    "Income": ["Salary", "Other Income"],
+    "Refund": ["Purchase Refund", "Return", "Cashback", "Other Refund"],
+    "Investment": ["Roth IRA", "Brokerage"],
+    "CCPayment": ["CC Payment"],
+    "LoanPayment": ["Loan Payment"],
+    "Transfer": ["Transfer"],
+    "BalanceTransfer": ["Balance Transfer"]
+  },
+  "budgets": [
+    { "type": "Expense", "category": "Groceries", "amounts": { "jan": 400, "feb": 400, "mar": 400, "apr": 400, "may": 400, "jun": 400, "jul": 400, "aug": 400, "sep": 400, "oct": 400, "nov": 400, "dec": 400 } },
+    { "type": "Expense", "category": "Restaurants", "amounts": { "jan": 150, "feb": 150, "mar": 150, "apr": 150, "may": 150, "jun": 150, "jul": 150, "aug": 150, "sep": 150, "oct": 150, "nov": 150, "dec": 150 } },
+    { "type": "Expense", "category": "Gas", "amounts": { "jan": 120, "feb": 120, "mar": 120, "apr": 120, "may": 120, "jun": 120, "jul": 120, "aug": 120, "sep": 120, "oct": 120, "nov": 120, "dec": 120 } }
+  ],
+  "startingBalances": {
+    "Demo Checking": { "jan": 2500, "feb": 2680, "mar": 2905, "apr": 3130, "may": 3355, "jun": 3580, "jul": 0, "aug": 0, "sep": 0, "oct": 0, "nov": 0, "dec": 0 },
+    "Demo Savings": { "jan": 5000, "feb": 5100, "mar": 5200, "apr": 5300, "may": 5400, "jun": 5500, "jul": 0, "aug": 0, "sep": 0, "oct": 0, "nov": 0, "dec": 0 },
+    "Demo Card": { "jan": 180, "feb": 195, "mar": 210, "apr": 190, "may": 205, "jun": 220, "jul": 0, "aug": 0, "sep": 0, "oct": 0, "nov": 0, "dec": 0 }
+  },
+  "transactions": [
+    { "date": "2026-06-01", "type": "Income", "account": "Demo Checking", "category": "Salary", "description": "paycheck", "amount": 2100, "fromAccount": null },
+    { "date": "2026-06-01", "type": "Expense", "account": "Demo Checking", "category": "Rent", "description": "june rent", "amount": 1200, "fromAccount": null },
+    { "date": "2026-06-03", "type": "Expense", "account": "Demo Card", "category": "Groceries", "description": "grocery run", "amount": 86.4, "fromAccount": null },
+    { "date": "2026-06-05", "type": "Expense", "account": "Demo Card", "category": "Restaurants", "description": "lunch out", "amount": 18.75, "fromAccount": null },
+    { "date": "2026-06-07", "type": "Expense", "account": "Demo Card", "category": "Gas", "description": "fill up", "amount": 42.1, "fromAccount": null },
+    { "date": "2026-06-08", "type": "Transfer", "account": "Demo Savings", "category": "Transfer", "description": "monthly savings", "amount": 100, "fromAccount": "Demo Checking" },
+    { "date": "2026-06-10", "type": "Expense", "account": "Demo Card", "category": "Subscriptions", "description": "streaming", "amount": 15.99, "fromAccount": null },
+    { "date": "2026-06-12", "type": "Expense", "account": "Demo Card", "category": "Groceries", "description": "grocery run", "amount": 74.2, "fromAccount": null },
+    { "date": "2026-06-14", "type": "Expense", "account": "Demo Checking", "category": "Phone Bill", "description": "phone", "amount": 45, "fromAccount": null },
+    { "date": "2026-06-15", "type": "Income", "account": "Demo Checking", "category": "Salary", "description": "paycheck", "amount": 2100, "fromAccount": null },
+    { "date": "2026-06-15", "type": "Investment", "account": "Demo Checking", "category": "Roth IRA", "description": "monthly contribution", "amount": 250, "fromAccount": null },
+    { "date": "2026-06-17", "type": "Expense", "account": "Demo Card", "category": "Shopping", "description": "new shoes", "amount": 64.99, "fromAccount": null },
+    { "date": "2026-06-18", "type": "Refund", "account": "Demo Card", "category": "Return", "description": "returned shoes", "amount": 64.99, "fromAccount": null },
+    { "date": "2026-06-20", "type": "Expense", "account": "Demo Card", "category": "Restaurants", "description": "dinner", "amount": 32.5, "fromAccount": null },
+    { "date": "2026-06-22", "type": "CC Payment", "account": "Demo Card", "category": "CC Payment", "description": "card payoff", "amount": 220, "fromAccount": "Demo Checking" },
+    { "date": "2026-06-24", "type": "Expense", "account": "Demo Card", "category": "Groceries", "description": "grocery run", "amount": 91.3, "fromAccount": null },
+    { "date": "2026-06-26", "type": "Expense", "account": "Demo Checking", "category": "Utilities", "description": "electric", "amount": 88.6, "fromAccount": null },
+    { "date": "2026-05-01", "type": "Income", "account": "Demo Checking", "category": "Salary", "description": "paycheck", "amount": 2100, "fromAccount": null },
+    { "date": "2026-05-01", "type": "Expense", "account": "Demo Checking", "category": "Rent", "description": "may rent", "amount": 1200, "fromAccount": null },
+    { "date": "2026-05-04", "type": "Expense", "account": "Demo Card", "category": "Groceries", "description": "grocery run", "amount": 95.8, "fromAccount": null },
+    { "date": "2026-05-10", "type": "Expense", "account": "Demo Card", "category": "Subscriptions", "description": "streaming", "amount": 15.99, "fromAccount": null },
+    { "date": "2026-05-15", "type": "Income", "account": "Demo Checking", "category": "Salary", "description": "paycheck", "amount": 2100, "fromAccount": null },
+    { "date": "2026-05-15", "type": "Investment", "account": "Demo Checking", "category": "Roth IRA", "description": "monthly contribution", "amount": 250, "fromAccount": null },
+    { "date": "2026-05-18", "type": "Expense", "account": "Demo Card", "category": "Gas", "description": "fill up", "amount": 38.9, "fromAccount": null },
+    { "date": "2026-05-22", "type": "CC Payment", "account": "Demo Card", "category": "CC Payment", "description": "card payoff", "amount": 205, "fromAccount": "Demo Checking" },
+    { "date": "2026-05-25", "type": "Expense", "account": "Demo Card", "category": "Groceries", "description": "grocery run", "amount": 82.15, "fromAccount": null },
+    { "date": "2026-04-01", "type": "Income", "account": "Demo Checking", "category": "Salary", "description": "paycheck", "amount": 2100, "fromAccount": null },
+    { "date": "2026-04-01", "type": "Expense", "account": "Demo Checking", "category": "Rent", "description": "april rent", "amount": 1200, "fromAccount": null },
+    { "date": "2026-04-10", "type": "Expense", "account": "Demo Card", "category": "Subscriptions", "description": "streaming", "amount": 15.99, "fromAccount": null },
+    { "date": "2026-04-15", "type": "Income", "account": "Demo Checking", "category": "Salary", "description": "paycheck", "amount": 2100, "fromAccount": null },
+    { "date": "2026-04-15", "type": "Investment", "account": "Demo Checking", "category": "Roth IRA", "description": "monthly contribution", "amount": 250, "fromAccount": null },
+    { "date": "2026-04-20", "type": "Expense", "account": "Demo Card", "category": "Groceries", "description": "grocery run", "amount": 78.45, "fromAccount": null },
+    { "date": "2026-04-22", "type": "CC Payment", "account": "Demo Card", "category": "CC Payment", "description": "card payoff", "amount": 190, "fromAccount": "Demo Checking" }
+  ],
+  "netWorth": [
+    { "date": "2026-04-30", "checking": 3130, "savings": 5300, "investments": 4200, "ccDebt": 190, "otherDebt": 0, "notes": "demo" },
+    { "date": "2026-05-31", "checking": 3355, "savings": 5400, "investments": 4450, "ccDebt": 205, "otherDebt": 0, "notes": "demo" },
+    { "date": "2026-06-30", "checking": 3580, "savings": 5500, "investments": 4700, "ccDebt": 220, "otherDebt": 0, "notes": "demo" }
+  ],
+  "debtPlans": [],
+  "bills": [
+    { "name": "Rent", "amount": 1200, "dueDay": 1, "recurrence": "monthly", "type": "Expense", "account": "Demo Checking", "fromAccount": null, "category": "Rent", "active": true },
+    { "name": "Phone", "amount": 45, "dueDay": 14, "recurrence": "monthly", "type": "Expense", "account": "Demo Checking", "fromAccount": null, "category": "Phone Bill", "active": true },
+    { "name": "Demo Card", "amount": 0, "dueDay": 6, "recurrence": "auto-cc", "type": "CC Payment", "account": "Demo Card", "fromAccount": "Demo Checking", "category": "CC Payment", "linkedAccount": "Demo Card", "closeDay": 15, "graceDays": 21, "active": true }
+  ],
+  "goals": [
+    { "name": "Emergency fund", "target": 10000, "account": "Demo Savings", "saved": 0, "targetDate": null, "archived": false }
+  ]
+}

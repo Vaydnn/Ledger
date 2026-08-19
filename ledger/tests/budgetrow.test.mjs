@@ -1,0 +1,31 @@
+import { bootEnv, makeChecker, tick } from './_env.mjs';
+const dom = await bootEnv();
+const { check, done } = makeChecker();
+const $ = s => dom.window.document.querySelector(s);
+const $$ = s => Array.from(dom.window.document.querySelectorAll(s));
+const { state, dbPut, loadState } = await import('../js/db.js');
+await import('../js/app.js'); await tick(200);
+const now = new Date(); const ym = now.toISOString().slice(0,7);
+const mAbbrs = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+const mAbbr = mAbbrs[now.getMonth()];
+await dbPut('accounts', { id:'a1', name:'RH CC', type:'Credit Card', active:true, order:0 });
+await dbPut('categories', { id:'Expense', list:['Phone Bill','Gas'] });
+// the exact scenario: budget exists for the year but THIS month's amount is 0
+const amounts = Object.fromEntries(mAbbrs.map(m => [m, 0]));
+await dbPut('budgets', { id:'b1', year: now.getFullYear(), type:'Expense', category:'Phone Bill', amounts });
+const amounts2 = Object.fromEntries(mAbbrs.map(m => [m, 200]));
+await dbPut('budgets', { id:'b2', year: now.getFullYear(), type:'Expense', category:'Gas', amounts: amounts2 });
+await dbPut('transactions', { id:'t1', date:`${ym}-01`, type:'Expense', account:'RH CC', category:'Phone Bill', amount:540.03, description:'' });
+await dbPut('transactions', { id:'t2', date:`${ym}-02`, type:'Expense', account:'RH CC', category:'Gas', amount:50, description:'' });
+await loadState();
+const { navigate } = await import('../js/app.js');
+navigate('home'); await tick();
+
+const unset = $('.bdg-unset');
+check('zero-target row gets the unset treatment', !!unset);
+check('shows spent amount', unset?.textContent.includes('540'));
+check('names the missing month explicitly', /no \w+ budget set/i.test(unset?.textContent || ''), unset?.textContent);
+check('normal budget row unaffected', $$('.bdg-row').some(r => r.textContent.includes('Gas') && r.textContent.includes('left')));
+unset.click(); await tick();
+check('tap opens the Budgets sheet', $('#sheet').classList.contains('open') && $('#sheetBody').textContent.includes('Budgets'));
+done('budget-row tests');
