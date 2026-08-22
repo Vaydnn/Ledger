@@ -5,7 +5,7 @@
 // undebuggable module graph). Now the VERSION bump is the one and only
 // update mechanism: every load is a coherent snapshot of a single release,
 // and app.js shows an "update ready" toast when a new SW has installed.
-const VERSION = 'ledger-v2.10.1';
+const VERSION = 'ledger-v2.10.2';
 const CORE = [
   './',
   './index.html',
@@ -76,7 +76,11 @@ self.addEventListener('fetch', (e) => {
           caches.open(VERSION).then((c) => c.put(req, copy));
         }
         return res;
-      });
+      }).catch(() =>
+        // FIX(v2.10.2): an offline miss used to reject respondWith (unhandled
+        // rejection). Serve the app shell for navigations; fail cleanly otherwise.
+        req.mode === 'navigate' ? caches.match('./index.html') : Response.error()
+      );
     })
   );
 });

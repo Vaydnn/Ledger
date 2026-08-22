@@ -227,7 +227,7 @@ function detectPositiveStreak(year, monthIdx){
     if (streak > 24) break; // sanity cap
     // Stop if we go beyond any data we have
     const ym = `${y}-${String(m).padStart(2,'0')}`;
-    const anyData = state.transactions.some(tt => tt.date.startsWith(ym));
+    const anyData = state.transactions.some(tt => (tt.date || '').startsWith(ym)); /* FIX(v2.10.2): dateless records */
     if (!anyData) break;
   }
   return streak;

@@ -146,6 +146,15 @@ function editAccount(id){
       for (const g of state.goals){
         if (g.account === oldName){ g.account = newName; await dbPut('goals', g); touched++; }
       }
+      // FIX(v2.10.2): the Real Available config (flags.realAvailCards) also
+      // keys on account names — a renamed card silently dropped out of the
+      // calculation, inflating "Real available" on Home and Bills.
+      const ra = state.flags.realAvailCards || [];
+      if (ra.includes(oldName)){
+        state.flags.realAvailCards = ra.map(n => n === oldName ? newName : n);
+        await saveFlags();
+        touched++;
+      }
       invalidateMerchantCache();
       toast(touched ? `Saved · updated ${touched} linked record${touched===1?'':'s'}` : 'Saved');
       openAccountsSheet();
@@ -607,6 +616,10 @@ export async function recomputeAllBalances(){
 export async function backupJSON(){
   const data = {
     version:2, // NEW(v2.0): adds goals; older restores ignore unknown keys
+    // NEW(v2.10.2): app flags ride along (Real Available card config, auto-
+    // snapshot toggle, dismissed banners) — restoring on a new device used
+    // to silently lose all of them. Old restores ignore the unknown key.
+    flags: { ...state.flags },
     accounts: state.accounts,
     categories: state.categories,
     budgets: state.budgets,
@@ -677,6 +690,12 @@ export async function restoreJSON(onRestored){
         await dbPut('categories', { id:k, list: Array.isArray(cats[k]) ? cats[k] : [] });
       }
       await loadState();
+      // NEW(v2.10.2): merge backed-up flags over this device's (backups from
+      // before v2.10.2 have no flags key — nothing changes for them).
+      if (data.flags && typeof data.flags === 'object'){
+        state.flags = { ...state.flags, ...data.flags, id:'flags' };
+        await saveFlags();
+      }
       invalidateMerchantCache();
       if (typeof onRestored === 'function') onRestored();
       toast('Backup restored');

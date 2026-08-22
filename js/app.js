@@ -20,6 +20,7 @@ import { renderDebts } from './debts.js';
 import { renderMore } from './more.js';
 import { maybeAutoSnapshot } from './networth.js'; // NEW(v2.0)
 import { purgeTrash } from './trash.js';           // NEW(v2.0)
+import { ensureYearCarryover } from './balances.js'; // NEW(v2.10.2)
 
 /* ─── Navigation ─────────────────────────── */
 export function renderCurrent(){
@@ -206,6 +207,12 @@ function showFirstRun(){
 /* ─── Init ─────────────────────────── */
 async function init(){
   await loadState();
+
+  // FIX(v2.10.2): before the first paint, seed current-year starting-balance
+  // records for dormant accounts from their prior-year December ending —
+  // otherwise they render as $0 all January until a transaction touches them.
+  // No-op except in the window after a year rollover, and non-fatal.
+  try { await ensureYearCarryover(); } catch(e){ console.warn('Year carryover failed', e); }
 
   if (isFreshInstall()) showFirstRun();
 

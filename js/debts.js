@@ -2,7 +2,7 @@
    debts.js — Debts & Loans view + debt plan editor sheet.
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthName, today, parseLocalDate, daysBetween, clamp, uid, toast, toastAction, esc, toCents, fromCents, round2, parseAmount } from './util.js';
+import { $, $$, fmt, fmtShort, monthName, today, parseLocalDate, daysBetween, clamp, uid, toast, toastAction, esc, toCents, fromCents, round2, parseAmount, sumMoney } from './util.js';
 import { state, dbPut, dbDel, saveFlags } from './db.js';
 import { balanceAt, balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
@@ -111,7 +111,7 @@ export function renderDebts(){
   const debts = state.accounts.filter(a => a.active && (a.type === 'Credit Card' || a.type === 'Loan'));
   const ccs = debts.filter(a => a.type === 'Credit Card');
   const loans = debts.filter(a => a.type === 'Loan');
-  const total = debts.reduce((s,a) => s + balanceAt(a.name, year, month), 0);
+  const total = sumMoney(debts, a => balanceAt(a.name, year, month)); /* FIX(v2.10.2): cents-safe */
 
   v.innerHTML = `
     <div class="card" style="margin-bottom:14px;">

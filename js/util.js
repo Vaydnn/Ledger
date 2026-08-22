@@ -9,7 +9,12 @@
 // v2.9.3 — hotfix: the Add Budget form's Type/Category pickers stranded the
 // user on the picker (callbacks mutated a detached node, never re-rendered).
 // Form state moved to a module object; pickers re-render the sheet.
-export const APP_VERSION = '2.10.1';
+// v2.10.2 — bug-fix release: account renames now follow through to the
+// Real Available card config; year-boundary carryover runs for dormant
+// accounts on load; dateless transactions can no longer crash Home/
+// Activity/Insights; paying an auto-cc bill in a past month uses that
+// month's balance, not today's.
+export const APP_VERSION = '2.10.2';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data
@@ -94,7 +99,10 @@ export const toLocalISO = (d) => {
 export const today = () => toLocalISO(new Date());
 // Parse a "YYYY-MM-DD" string as local midnight (not UTC — avoids timezone-shift bugs)
 export const parseLocalDate = (iso) => new Date(iso + 'T00:00:00');
-export const monthKey = (iso) => iso.slice(0,7); // 'YYYY-MM'
+// FIX(v2.10.2): tolerate dateless records (hand-edited backups) — loadState
+// guards its sorts against them, but monthKey callers in Home/Activity/
+// Breakdown called .slice on undefined and bricked the whole view.
+export const monthKey = (iso) => (iso || '').slice(0,7); // 'YYYY-MM'
 export const monthName = (m, short=false) => {
   const names = short
     ? ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']

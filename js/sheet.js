@@ -188,8 +188,10 @@ function sheetTransform(off){
 // a sheet-based picker is more reliable and friendlier to tap on.
 export function openPicker(title, options, current, onSelect){
   const opts = (options || []).filter(o => o != null && o !== '');
+  // FIX(v2.10.2): titles can carry user/CSV strings (e.g. Reconcile passes a
+  // statement description) — escape like everything else that hits innerHTML.
   $('#sheetBody').innerHTML = `
-    <h2>${title}</h2>
+    <h2>${esc(title)}</h2>
     ${opts.length === 0
       ? `<div class="muted small" style="padding:16px 0;">No options available.</div>`
       : `<div class="picker-list">

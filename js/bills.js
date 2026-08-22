@@ -306,11 +306,14 @@ export async function payBill(billId){
   const ym = `${year}-${String(month).padStart(2,'0')}`;
   if ((bill.paidMonths || {})[ym]) { toast('Already paid'); return; }
 
-  // For auto-cc bills, use the LIVE balance of the linked card. If the
-  // balance is zero (already paid down some other way), there's nothing
-  // to pay — bail out cleanly rather than logging a $0 transaction.
+  // For auto-cc bills, use the linked card's balance FOR THE VIEWED MONTH
+  // (live when that's the current month). FIX(v2.10.2): this used to always
+  // read the live balance, so paying while browsing a past month logged
+  // today's number dated into that month. If the balance is zero (already
+  // paid down some other way), there's nothing to pay — bail out cleanly
+  // rather than logging a $0 transaction.
   const isAuto = bill.recurrence === 'auto-cc';
-  const payAmount = round2(isAuto ? getBillAmount(bill) : bill.amount);
+  const payAmount = round2(isAuto ? getBillAmount(bill, year, month) : bill.amount);
   if (isAuto && payAmount <= 0){
     toast('Nothing to pay — balance is $0');
     return;

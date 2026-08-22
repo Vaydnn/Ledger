@@ -101,6 +101,23 @@ async function cascadeBalances(accountName, year, fromMonthIdx){
 // over every account-year pair without needing access to ensureBalRecord.
 export { cascadeBalances };
 
+// FIX(v2.10.2): year-boundary carryover for DORMANT accounts. The creation-
+// time carryover above only fires when a cascade touches that account — so
+// an account with no transactions yet in the new year (a quiet Savings
+// account) had no current-year record and read as $0 everywhere until
+// something happened to touch it. Called once per app start (app.js): for
+// every active account that has a prior-year record but no current-year
+// one, run the cascade, which creates the record with January seeded from
+// the prior December's computed ending balance.
+export async function ensureYearCarryover(){
+  const yr = new Date().getFullYear();
+  for (const a of state.accounts.filter(a => a.active)){
+    const has = state.startingBalances.some(b => b.account === a.name && b.year === yr);
+    const prev = state.startingBalances.some(b => b.account === a.name && b.year === yr - 1);
+    if (!has && prev) await cascadeBalances(a.name, yr, 1);
+  }
+}
+
 // Called after any transaction mutation (add / edit / delete). Figures
 // out which (account, year) pairs are affected by the change, then for
 // each one cascades from the earliest affected month forward.

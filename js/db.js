@@ -64,7 +64,9 @@ function normalizeRecord(store, rec){
       if (rec[k] != null && typeof rec[k] !== 'string') rec[k] = String(rec[k]);
     }
   } else if (store === 'bills' || store === 'debtPlans' || store === 'goals'){
-    for (const k of ['amount','target','saved','minPayment','apr','origBalance']){
+    // FIX(v2.10.2): 'originalBalance' is the field debt plans actually use
+    // (the old 'origBalance' key matched nothing).
+    for (const k of ['amount','target','saved','minPayment','apr','originalBalance']){
       if (rec[k] != null && typeof rec[k] !== 'number'){
         const n = parseFloat(rec[k]);
         if (!isNaN(n)) rec[k] = n;
