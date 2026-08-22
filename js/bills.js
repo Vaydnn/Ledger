@@ -209,6 +209,45 @@ export function renderBills(){
     </div>
   ` : '';
 
+  // FIX(v2.10.1): paused bills were stranded — active:false filtered them out
+  // of every view, but the only path to the Active toggle is tapping a bill
+  // row, so a paused bill could never be reactivated from the UI. They now
+  // render in a dimmed "Paused" section: no pay checkbox (they're excluded
+  // from all money math on purpose), tap opens the editor where the existing
+  // Yes/No toggle brings them back.
+  const pausedBills = state.bills
+    .filter(b => b.active === false)
+    .sort((a, b) => getBillDueDay(a) - getBillDueDay(b));
+  const pausedRowHTML = (b) => {
+    const isOnce = b.recurrence === 'once';
+    const isAuto = b.recurrence === 'auto-cc';
+    const acctMeta = isAuto
+      ? `Tracks ${esc(b.linkedAccount)}`
+      : (b.fromAccount ? `${esc(b.fromAccount)} → ${esc(b.account)}` : esc(b.account));
+    const tag = isOnce ? ' <span class="bill-once-tag">Once</span>'
+             : isAuto ? ' <span class="bill-auto-tag">Auto</span>'
+             : '';
+    return `
+      <div class="bill-row is-paused" data-bill-id="${b.id}" style="opacity:.55;">
+        <div class="bill-body" style="margin-left:0;">
+          <div class="bill-name">${esc(b.name)}${tag}</div>
+          <div class="bill-meta">
+            <span class="bill-status future">Paused</span>
+            <span class="bill-acct">· ${acctMeta}</span>
+          </div>
+        </div>
+        <div class="bill-amt mono">${b.recurrence === 'auto-cc' ? '—' : fmtShort(b.amount || 0)}</div>
+      </div>
+    `;
+  };
+  const pausedHTML = pausedBills.length ? `
+    <div class="bill-section">
+      <div class="bill-section-head">Paused <span class="muted small">${pausedBills.length}</span></div>
+      ${pausedBills.map(pausedRowHTML).join('')}
+      <div class="muted small" style="padding:6px 2px 0;">Paused bills don't count toward totals. Tap one to edit and set Active to Yes.</div>
+    </div>
+  ` : '';
+
   v.innerHTML = `
     <div class="real-card" style="margin-top:0;">
       <div class="real-head">
@@ -232,7 +271,7 @@ export function renderBills(){
       <div class="bs-tile"><div class="l">Remaining</div><div class="v" style="color:var(--amber);">${fmt(unpaidTotal)}</div></div>
     </div>
 
-    ${bills.length === 0 ? `
+    ${bills.length === 0 && pausedBills.length === 0 ? `
       <div class="empty">
         <div class="big">No bills yet.</div>
         Add your recurring bills to see what's coming due.
@@ -243,6 +282,7 @@ export function renderBills(){
       ${sectionHTML('Due soon', groups.soon)}
       ${sectionHTML('Later this month', groups.future)}
       ${sectionHTML('Paid', groups.paid)}
+      ${pausedHTML}
     `}
 
     <button class="btn" id="add-bill" style="margin-top:18px;">+ Add Bill</button>

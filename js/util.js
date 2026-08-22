@@ -9,7 +9,7 @@
 // v2.9.3 — hotfix: the Add Budget form's Type/Category pickers stranded the
 // user on the picker (callbacks mutated a detached node, never re-rendered).
 // Form state moved to a module object; pickers re-render the sheet.
-export const APP_VERSION = '2.10.0';
+export const APP_VERSION = '2.10.1';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data
