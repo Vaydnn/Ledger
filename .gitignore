@@ -1,7 +1,11 @@
 node_modules/
+_site/
 
 # Real financial data must never land in this public repo.
 # Backups/exports produced by the app match these patterns.
 ledger-backup-*.json
 ledger-export-*.xlsx
 PRIVATE_*
+# Bank / card statement exports used with Reconcile (e.g. "Date range.CSV").
+*.csv
+*.CSV

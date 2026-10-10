@@ -2,8 +2,6 @@
 import 'fake-indexeddb/auto';
 import fs from 'fs';
 import { JSDOM } from 'jsdom';
-import * as XLSXmod from 'xlsx';
-globalThis.XLSX = XLSXmod; // app loads this from CDN in production
 
 export async function bootEnv(){
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8')

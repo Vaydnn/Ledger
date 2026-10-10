@@ -1,23 +1,31 @@
 /* ============================================================
    add.js — Add / Edit transaction form.
 
-   v1.1.0 addition: merchant memory — as you type the description,
-   we surface up to 5 matching past merchants. Tapping a suggestion
-   fills the description AND auto-sets the best category + account
-   based on historical usage.
+   v1.1.0: merchant memory — as you type the description, up to 5 matching
+   past merchants; tapping one fills the description AND the best category
+   + account from history.
+
+   v3.0:
+   - Per-category default account: picking a category switches the account
+     to your rule for it (Restaurants → your Citi card) or, failing a rule,
+     to a clear recent habit — unless you already chose an account yourself.
+     Picking a different account offers "Always use X for Restaurants?".
+   - Save is double-tap safe and refuses a blank date.
+   - Refunds carry an optional "counts against budget" category.
+   - A saved transaction that looks like an unpaid bill offers to mark it paid
+     (logging rent by hand used to leave the bill unpaid, so Real Available
+     subtracted it twice).
    ============================================================ */
 
-import { $, $$, today, uid, toast, parseAmount, esc, haptic } from './util.js';
-import { state, dbPut } from './db.js';
+import { $, $$, today, uid, toast, toastAction, parseAmount, esc, haptic, busyGuard } from './util.js';
+import { state, dbPut, saveFlags } from './db.js';
 import { openPicker, closeSheet } from './sheet.js';
 import { navigate } from './app.js';
-import { getMerchantSuggestions, lookupMerchant, invalidateMerchantCache } from './merchants.js';
-import { cascadeForChange } from './balances.js';
+import { getMerchantSuggestions, lookupMerchant, invalidateMerchantCache, preferredAccountFor, categoryRule, categoryRuleKey, refundBudgetCategory } from './merchants.js';
+import { findMatchingBill, markBillPaidWith } from './bills.js';
 
-// FIX(v2.9.1): the pre-selected account used to be a hardcoded personal
-// account name in this public repo. It's now the account you've actually
-// used most (among valid options for the current type) — same behavior on
-// a live device, zero personal data in the code.
+// FIX(v2.9.1): the pre-selected account is the one you've actually used most
+// (among valid options for the current type) — no personal names in code.
 function mostUsedAccount(options){
   if (!options.length) return null;
   const usage = {};
@@ -32,16 +40,28 @@ function mostUsedAccount(options){
   return best;
 }
 
-export const addForm = {
-  type: 'Expense',
-  date: today(),
-  account: null,
-  category: null,
-  description: '',
-  amount: '',
-  fromAccount: null,
-  editingId: null
+const BLANK = {
+  type: 'Expense', date: '', account: null, category: null, description: '', amount: '',
+  fromAccount: null, editingId: null,
+  accountTouched: false,   // NEW(v3.0): the user picked the account themselves
+  accountSource: null,     // NEW(v3.0): 'rule' | 'habit' when a category default chose it
+  offsetCategory: null     // NEW(v3.0): Refund → budget category (null = auto, 'none' = opt out)
 };
+export const addForm = { ...BLANK, date: today() };
+
+// NEW(v3.0): one place that resets the form (quick-log, reconcile prefill,
+// cancel, after save). `over` sets fields; date defaults to today.
+export function resetAddForm(over = {}){
+  Object.assign(addForm, BLANK, { date: today() }, over);
+}
+
+// Apply the category's default account unless the user chose one already.
+function applyCategoryDefault(acctOptions){
+  if (addForm.accountTouched || !addForm.category) return;
+  const pref = preferredAccountFor(addForm.type, addForm.category, acctOptions.map(a => a.name));
+  if (pref){ addForm.account = pref.account; addForm.accountSource = pref.source; }
+  else addForm.accountSource = null;
+}
 
 export function renderAdd(){
   const v = $('#view-add');
@@ -78,11 +98,13 @@ export function renderAdd(){
   if (addForm.type === 'Loan Payment') fromOptions = checking;
   if (addForm.type === 'Balance Transfer') fromOptions = ccs.filter(a => a.name !== addForm.account);
 
-  if (!addForm.account || !acctOptions.find(a => a.name === addForm.account)){
-    addForm.account = mostUsedAccount(acctOptions)?.name || null;
-  }
   if (!addForm.category || !catList.includes(addForm.category)){
     addForm.category = catList[0] || null;
+  }
+  if (!addForm.account || !acctOptions.find(a => a.name === addForm.account)){
+    addForm.accountTouched = false;
+    addForm.account = mostUsedAccount(acctOptions)?.name || null;
+    applyCategoryDefault(acctOptions);
   }
   if (fromOptions.length && (!addForm.fromAccount || !fromOptions.find(a => a.name === addForm.fromAccount))){
     addForm.fromAccount = fromOptions[0]?.name || null;
@@ -104,9 +126,7 @@ export function renderAdd(){
     return 'From';
   })();
 
-  // NEW(v2.9.2): one-tap category chips — your most-used categories for the
-  // current type, so the highest-frequency action in the app skips the
-  // picker sheet entirely. The picker stays for the long tail.
+  // NEW(v2.9.2): one-tap chips for your most-used categories of this type.
   const topCats = (() => {
     const counts = {};
     for (const t of state.transactions){
@@ -120,6 +140,31 @@ export function renderAdd(){
       .slice(0, 6);
   })();
 
+  // NEW(v3.0): why the account is what it is (only when a default chose it).
+  const acctHint = addForm.accountSource && !addForm.accountTouched
+    ? `<div class="field-hint">${addForm.accountSource === 'rule' ? 'Your default' : 'Your usual card'} for ${esc(addForm.category)}</div>`
+    : '';
+
+  // NEW(v3.0): refund → budget category.
+  const refundOffset = (() => {
+    if (addForm.type !== 'Refund') return '';
+    let label;
+    if (addForm.offsetCategory === 'none') label = "Doesn't count against a budget";
+    else if (addForm.offsetCategory) label = addForm.offsetCategory;
+    else {
+      const guess = refundBudgetCategory({ type:'Refund', description: addForm.description });
+      label = guess ? `${guess} (from merchant)` : 'Auto — from merchant';
+    }
+    return `
+      <div class="field">
+        <label>Gives back to budget <span class="muted small">(optional)</span></label>
+        <button class="input picker-btn" id="f-offset" type="button">
+          <span class="picker-val">${esc(label)}</span>
+          <span class="picker-chev">▾</span>
+        </button>
+      </div>`;
+  })();
+
   v.innerHTML = `
     <div class="type-pills">
       ${types.map(t => `<button class="type-pill" data-type="${t}" aria-pressed="${addForm.type===t}">${t}</button>`).join('')}
@@ -127,18 +172,18 @@ export function renderAdd(){
 
     <div class="field">
       <label>Amount</label>
-      <input class="input amount" id="f-amount" type="text" inputmode="decimal" placeholder="0.00" value="${addForm.amount}" />
+      <input class="input amount" id="f-amount" type="text" inputmode="decimal" placeholder="0.00" value="${esc(addForm.amount)}" />
     </div>
 
     <div class="row-2">
       <div class="field">
         <label>Date</label>
-        <input class="input" id="f-date" type="date" value="${addForm.date}" />
+        <input class="input" id="f-date" type="date" value="${esc(addForm.date)}" />
       </div>
       <div class="field">
         <label>Category</label>
         <button class="input picker-btn" id="f-cat" type="button">
-          <span class="picker-val">${addForm.category || '—'}</span>
+          <span class="picker-val">${esc(addForm.category || '—')}</span>
           <span class="picker-chev">▾</span>
         </button>
       </div>
@@ -153,16 +198,17 @@ export function renderAdd(){
     <div class="field">
       <label>${accountLabel}</label>
       <button class="input picker-btn" id="f-acct" type="button">
-        <span class="picker-val">${addForm.account || '—'}</span>
+        <span class="picker-val">${esc(addForm.account || '—')}</span>
         <span class="picker-chev">▾</span>
       </button>
+      ${acctHint}
     </div>
 
     ${fromOptions.length ? `
       <div class="field">
         <label>${fromLabel}</label>
         <button class="input picker-btn" id="f-from" type="button">
-          <span class="picker-val">${addForm.fromAccount || '—'}</span>
+          <span class="picker-val">${esc(addForm.fromAccount || '—')}</span>
           <span class="picker-chev">▾</span>
         </button>
       </div>
@@ -174,44 +220,58 @@ export function renderAdd(){
       <div id="f-suggest" class="suggest" aria-hidden="true"></div>
     </div>
 
+    ${refundOffset}
+
     <button class="btn" id="f-save">${addForm.editingId ? 'Update' : 'Save'} Transaction</button>
     ${addForm.editingId ? '<button class="btn ghost" id="f-cancel" style="margin-top:10px;">Cancel Edit</button>' : ''}
   `;
 
-  // Type pills
+  const setCategory = (cat) => {
+    addForm.category = cat;
+    applyCategoryDefault(acctOptions);
+    renderAdd();
+  };
+
   $$('.type-pill', v).forEach(p => p.addEventListener('click', () => {
     addForm.type = p.dataset.type;
     addForm.category = null; addForm.fromAccount = null;
+    addForm.account = null; addForm.accountTouched = false; addForm.accountSource = null;
+    addForm.offsetCategory = null;
     renderAdd();
   }));
   $('#f-amount', v).addEventListener('input', e => addForm.amount = e.target.value);
   $('#f-date', v).addEventListener('input', e => addForm.date = e.target.value);
 
-  // NEW(v2.9.2): category chips — set and re-render (state in addForm
-  // survives the re-render, same as the pickers).
-  $$('.cat-chip', v).forEach(ch => ch.addEventListener('click', () => {
-    addForm.category = ch.dataset.cat;
-    renderAdd();
-  }));
+  $$('.cat-chip', v).forEach(ch => ch.addEventListener('click', () => setCategory(ch.dataset.cat)));
 
-  // Pickers — CLOSE the sheet explicitly because these are opened from a
-  // view (not from inside a sheet), so the sheet backdrop must go away
-  // after selection. (See sheet.js header for the full rationale.)
+  // Pickers — CLOSE the sheet explicitly: opened from a view, not a sheet.
   $('#f-cat', v).addEventListener('click', () => openPicker('Category', catList, addForm.category, (val) => {
     closeSheet();
-    addForm.category = val;
-    renderAdd();
+    setCategory(val);
   }));
   $('#f-acct', v).addEventListener('click', () => openPicker(accountLabel, acctOptions.map(a => a.name), addForm.account, (val) => {
     closeSheet();
+    const auto = addForm.account;
     addForm.account = val;
+    addForm.accountTouched = true;
     renderAdd();
+    offerCategoryRule(val, auto);
   }));
   if ($('#f-from', v)) $('#f-from', v).addEventListener('click', () => openPicker(fromLabel, fromOptions.map(a => a.name), addForm.fromAccount, (val) => {
     closeSheet();
     addForm.fromAccount = val;
     renderAdd();
   }));
+  $('#f-offset', v)?.addEventListener('click', () => {
+    const AUTO = 'Auto — from merchant', NONE = "Doesn't count against a budget";
+    const cats = state.categories.Expense || [];
+    const cur = addForm.offsetCategory === 'none' ? NONE : (addForm.offsetCategory || AUTO);
+    openPicker('Gives back to budget', [AUTO, NONE, ...cats], cur, (val) => {
+      closeSheet();
+      addForm.offsetCategory = val === AUTO ? null : val === NONE ? 'none' : val;
+      renderAdd();
+    });
+  });
 
   // Description + merchant autocomplete
   const descInput = $('#f-desc', v);
@@ -222,7 +282,6 @@ export function renderAdd(){
     if (hits.length === 0){ suggest.innerHTML = ''; suggest.classList.remove('open'); return; }
     suggest.innerHTML = hits.map(h => {
       const meta = [h.category, h.account].filter(Boolean).join(' · ');
-      // FIX(v1.2): merchant display/meta are user-entered strings — escape before innerHTML.
       return `
         <button class="suggest-row" type="button" data-desc="${esc(h.display)}">
           <span class="suggest-name">${esc(h.display)}</span>
@@ -240,10 +299,12 @@ export function renderAdd(){
       addForm.description = picked;
       descInput.value = picked;
       if (m){
-        // Only auto-fill category if it's valid for the current type
         if (m.category && catList.includes(m.category)) addForm.category = m.category;
-        // Only auto-fill account if it's a valid option for the current type
-        if (m.account && acctOptions.find(a => a.name === m.account)) addForm.account = m.account;
+        // The merchant's own usual account is more specific than the
+        // category default — use it unless the user already chose one.
+        if (!addForm.accountTouched && m.account && acctOptions.find(a => a.name === m.account)){
+          addForm.account = m.account; addForm.accountSource = null;
+        } else applyCategoryDefault(acctOptions);
       }
       suggest.classList.remove('open');
       renderAdd();
@@ -252,6 +313,13 @@ export function renderAdd(){
   descInput.addEventListener('input', e => {
     addForm.description = e.target.value;
     updateSuggestions();
+    // Refund budget guess follows the description live (updated in place —
+    // re-rendering here would eat a tap on Save).
+    const off = $('#f-offset .picker-val', v);
+    if (off && !addForm.offsetCategory){
+      const guess = refundBudgetCategory({ type:'Refund', description: addForm.description });
+      off.textContent = guess ? `${guess} (from merchant)` : 'Auto — from merchant';
+    }
   });
   descInput.addEventListener('blur', () => {
     // Delay hide so a click on a suggestion registers
@@ -263,18 +331,34 @@ export function renderAdd(){
   if ($('#f-cancel', v)) $('#f-cancel', v).addEventListener('click', cancelEdit);
 }
 
-async function saveTransaction(){
-  // FIX(v1.2): parseFloat silently mangled formatted input ('1,234.56' → 1,
-  // '$12.50' → NaN) and stored sub-cent amounts (the live backup contained
-  // 15.876). parseAmount strips $/commas/spaces, rounds to cents, and rejects
-  // anything that still isn't a number.
+// NEW(v3.0): the user overrode the account the form picked. If it's a
+// category we can remember, offer to make it the rule.
+function offerCategoryRule(picked, previous){
+  const { type, category } = addForm;
+  if (!category || !['Expense','Income','Refund'].includes(type)) return;
+  if (picked === previous || categoryRule(type, category) === picked) return;
+  toastAction(`Always use ${picked} for ${category}?`, 'Always', async () => {
+    state.flags.categoryAccounts = { ...(state.flags.categoryAccounts || {}), [categoryRuleKey(type, category)]: picked };
+    await saveFlags();
+    toast(`${category} → ${picked} saved (change it in More → Categories)`);
+  }, 7000);
+}
+
+const saveTransaction = busyGuard(async () => {
+  // FIX(v1.2): parseAmount — strips $/commas, rounds to cents, rejects junk.
   const amt = parseAmount(addForm.amount);
   if (isNaN(amt) || amt <= 0) { toast('Enter a valid amount'); return; }
+  // FIX(v3.0): a cleared date input used to save a dateless transaction that
+  // vanished from every month view and from all balances.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(addForm.date || '')) { toast('Pick a date'); return; }
   if (!addForm.account) { toast('Pick an account'); return; }
   const needsFrom = ['Transfer','CC Payment','Loan Payment','Balance Transfer'].includes(addForm.type);
   if (needsFrom && !addForm.fromAccount) { toast('Pick a source account'); return; }
 
+  const existing = addForm.editingId ? state.transactions.find(t => t.id === addForm.editingId) : null;
+  // FIX(v3.0): an edit keeps any fields this form doesn't manage.
   const txn = {
+    ...(existing || {}),
     id: addForm.editingId || uid(),
     date: addForm.date,
     type: addForm.type,
@@ -284,42 +368,49 @@ async function saveTransaction(){
     amount: amt,
     fromAccount: needsFrom ? addForm.fromAccount : null
   };
-  // Snapshot the pre-edit state BEFORE we overwrite state.transactions —
-  // cascadeForChange needs both old and new to handle date/account moves.
-  const existing = addForm.editingId ? state.transactions.find(t => t.id === txn.id) : null;
-  const oldSnapshot = existing ? { ...existing } : null;
+  if (addForm.type === 'Refund' && addForm.offsetCategory) txn.offsetCategory = addForm.offsetCategory;
+  else delete txn.offsetCategory;
+
   await dbPut('transactions', txn);
   const idx = state.transactions.findIndex(t => t.id === txn.id);
   if (idx >= 0) state.transactions[idx] = txn;
   else state.transactions.push(txn);
-  state.transactions.sort((a,b) => b.date.localeCompare(a.date));
-  await cascadeForChange(oldSnapshot, txn);
+  state.transactions.sort((a,b) => (b.date||'').localeCompare(a.date||''));
   invalidateMerchantCache();
 
   const wasEdit = !!addForm.editingId;
   haptic(15); /* NEW(v2.2) */
-  toast(wasEdit ? 'Transaction updated' : 'Transaction saved');
 
-  // Keep type + date for fast repeat entry, reset the rest
-  const lastType = addForm.type;
-  const lastDate = addForm.date;
-  Object.assign(addForm, { type:lastType, date:lastDate, account:null, category:null, description:'', amount:'', fromAccount:null, editingId:null });
+  // Keep type + date for fast repeat entry, reset the rest.
+  resetAddForm({ type: addForm.type, date: addForm.date });
 
-  // FIX(v1.2): finishing an edit (started from Activity) bounced to Home,
-  // losing the user's place. Edits now return to Activity; fresh adds go Home.
+  // FIX(v1.2): edits return to Activity; fresh adds go Home.
   navigate(wasEdit ? 'txns' : 'home');
-}
+
+  // NEW(v3.0): logged a bill by hand? Offer to link it.
+  const bill = findMatchingBill(txn);
+  if (bill){
+    toastAction(`${wasEdit ? 'Updated' : 'Saved'} · looks like "${bill.name}"`, 'Mark paid', async () => {
+      await markBillPaidWith(bill, txn.date.slice(0, 7), txn.id);
+    }, 8000);
+  } else {
+    toast(wasEdit ? 'Transaction updated' : 'Transaction saved');
+  }
+});
 
 function cancelEdit(){
-  Object.assign(addForm, { type:'Expense', date:today(), account:null, category:null, description:'', amount:'', fromAccount:null, editingId:null });
+  resetAddForm();
   navigate('txns');
 }
 
 export function startEdit(txn){
-  Object.assign(addForm, {
+  resetAddForm({
     type: txn.type, date: txn.date, account: txn.account, category: txn.category,
-    description: String(txn.description ?? ''), /* FIX(v2.1): non-string descriptions */ amount: String(txn.amount), fromAccount: txn.fromAccount,
-    editingId: txn.id
+    description: String(txn.description ?? ''), /* FIX(v2.1): non-string descriptions */
+    amount: String(txn.amount), fromAccount: txn.fromAccount,
+    offsetCategory: txn.offsetCategory || null,
+    editingId: txn.id,
+    accountTouched: true   // editing: changing the category must not move the account
   });
   navigate('add');
 }

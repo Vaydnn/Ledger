@@ -3,18 +3,13 @@
    No imports. Every other module depends on this one.
    ============================================================ */
 
-// v2.10.0 — Activity search now matches fromAccount, so searching an account
-// name surfaces CC payments, transfers, loan payments, and balance transfers
-// where that account is the source — not just txns where it's the destination.
-// v2.9.3 — hotfix: the Add Budget form's Type/Category pickers stranded the
-// user on the picker (callbacks mutated a detached node, never re-rendered).
-// Form state moved to a module object; pickers re-render the sheet.
-// v2.10.2 — bug-fix release: account renames now follow through to the
-// Real Available card config; year-boundary carryover runs for dormant
-// accounts on load; dateless transactions can no longer crash Home/
-// Activity/Insights; paying an auto-cc bill in a past month uses that
-// month's balance, not today's.
-export const APP_VERSION = '2.10.2';
+// v3.0.0 — balances are derived from transactions + pinned openings (no more
+// stored cascade), accounts can be closed / merged / recovered, Excel import/
+// export removed (JSON only), atomic restore with rollback snapshots, smarter
+// reconcile for raw-description statements (Citi), per-category default
+// accounts, merchant-level recurring detection, refunds offset budgets.
+// See README.md for the full list.
+export const APP_VERSION = '3.0.0';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data
@@ -127,6 +122,38 @@ export const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDa
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export const alphaSort = (a, b) => String(a).localeCompare(String(b), undefined, { sensitivity:'base' });
 export const alphaSortBy = (key) => (a, b) => alphaSort(a[key], b[key]);
+export const ymOf = (year, month) => `${year}-${String(month).padStart(2,'0')}`;
+export const currentYm = () => today().slice(0, 7);
+// Letters + digits only, lowercased — "Burger-Barn" and "BURGER BARN" both
+// become "burgerbarn". Used to compare merchant names across sources.
+export const squash = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/* NEW(v3.0): double-tap guard. Wraps an async action so a second tap while
+   the first is still saving is ignored — a laggy Save or Pay used to log the
+   same transaction twice. keyFn scopes the lock (e.g. per bill id). */
+export function busyGuard(fn, keyFn = () => '*'){
+  const busy = new Set();
+  return async function(...args){
+    const k = keyFn(...args);
+    if (busy.has(k)) return;
+    busy.add(k);
+    try { return await fn.apply(this, args); }
+    finally { busy.delete(k); }
+  };
+}
+
+/* NEW(v3.0): save a Blob as a file. Revoking the object URL synchronously
+   after click() can cancel the download on some mobile browsers, so the
+   revoke waits a minute. */
+export function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 
 /* ─── Toast ─────────────────────────── */
 let _toastTimer = null;

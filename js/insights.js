@@ -21,7 +21,8 @@ import { state, dataVersion } from './db.js';
 import { monthTotals } from './effects.js';
 import { computePace } from './pace.js';                    // NEW(v2.8)
 import { detectRecurring } from './subscriptions.js';        // NEW(v2.8)
-import { billAppliesToMonth, getBillAmount, getBillDueDay } from './bills.js'; // NEW(v2.8)
+import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid } from './bills.js'; // NEW(v2.8)
+import { budgetSpentMap } from './budgets.js';            // NEW(v3.0)
 
 // Median of a numeric array
 function med(arr){
@@ -167,13 +168,13 @@ function detectEarlyBudgetBreach(year, monthIdx){
   const daysLeft = new Date(year, monthIdx, 0).getDate() - now.getDate();
   if (daysLeft < 5) return []; // late-month breaches are visible on the budget card anyway
   const mAbbr = monthAbbr[monthIdx-1];
-  const spentMap = categoryMap('Expense', year, monthIdx);
+  const spentMap = budgetSpentMap(year, monthIdx); // FIX(v3.0): refunds net back in, same as the budget card
   const out = [];
   for (const b of state.budgets){
     if (b.year !== year || b.type !== 'Expense') continue;
     const target = (b.amounts || {})[mAbbr] || 0;
     if (target <= 0) continue;
-    const used = spentMap[b.category] || 0;
+    const used = spentMap[`Expense|${b.category}`] || 0;
     if (used > target) out.push({ category: b.category, used, target, daysLeft });
   }
   out.sort((a,b) => (b.used - b.target) - (a.used - a.target));
@@ -189,7 +190,7 @@ function detectBillCluster(year, monthIdx){
   const due = state.bills.filter(b =>
     b.active !== false &&
     billAppliesToMonth(b, year, monthIdx) &&
-    !(b.paidMonths || {})[ym] &&
+    !isBillPaid(b, ym) &&
     getBillDueDay(b) >= D && getBillDueDay(b) <= D + 7
   );
   if (due.length < 2) return null;
@@ -337,6 +338,7 @@ export function detectInsights(year, monthIdx, max=3){
     if (o.ratio > 1){
       all.push({
         kind: 'outlier-high',
+        _category: o.category,
         title: `${esc(o.category)} is ${pct}% of your 6-mo median`,
         detail: `${fmt(o.current)} this month vs ${fmt(o.median)} typical.`,
         tone: 'warn',
@@ -421,7 +423,7 @@ export function detectInsights(year, monthIdx, max=3){
       kind: 'dup-suspect',
       _dismissKey: d.key, // NEW(v2.9.2): renders a × that remembers the pair
       title: `Possible duplicate: 2× ${fmt(d.a.amount)} on ${esc(d.a.account)}`,
-      detail: `${d.a.date} and ${d.b.date}${d.a.description ? ' · ' + esc(String(d.a.description)) : ''} — same amount ${d.gap === 0 ? 'same day' : Math.round(d.gap) + 'd apart'}. Real, or logged twice?`,
+      detail: `${esc(d.a.date)} and ${esc(d.b.date)}${d.a.description ? ' · ' + esc(String(d.a.description)) : ''} — same amount ${d.gap === 0 ? 'same day' : Math.round(d.gap) + 'd apart'}. Real, or logged twice?`,
       tone: 'warn',
       weight: 99
     });
@@ -434,7 +436,7 @@ export function detectInsights(year, monthIdx, max=3){
     all.push({
       kind: 'price-change',
       _category: r.category,
-      title: `${esc(r.category)} ${up ? 'went up' : 'went down'}: ${fmt(r.priceChange.from)} → ${fmt(r.priceChange.to)}`,
+      title: `${esc(r.label)} ${up ? 'went up' : 'went down'}: ${fmt(r.priceChange.from)} → ${fmt(r.priceChange.to)}`,
       detail: `${up ? '+' : '−'}${fmt(Math.abs(r.priceChange.to - r.priceChange.from))} per ${r.cadence.toLowerCase()} charge${up ? ' — worth a look.' : '.'}`,
       tone: up ? 'warn' : 'good',
       weight: 92
@@ -459,7 +461,7 @@ export function detectInsights(year, monthIdx, max=3){
     all.push({
       kind: 'big-ticket',
       title: `Top-5% expense: ${fmt(bigT.txn.amount)}`,
-      detail: `${esc(bigT.txn.category || '')}${bigT.txn.description ? ' · ' + esc(String(bigT.txn.description)) : ''} on ${bigT.txn.date}.`,
+      detail: `${esc(bigT.txn.category || '')}${bigT.txn.description ? ' · ' + esc(String(bigT.txn.description)) : ''} on ${esc(bigT.txn.date)}.`,
       tone: 'neutral',
       weight: 50
     });
@@ -488,10 +490,9 @@ export function detectInsights(year, monthIdx, max=3){
   // breach is the more specific, more actionable version of the same fact.
   const breachedCats = new Set(all.filter(i => i.kind === 'budget-breach').map(i => i._category));
   const filtered = all.filter(i => {
-    if (i.kind === 'outlier-high'){
-      for (const cat of priceChangedCats) if (i.title.includes(esc(cat))) return false;
-      for (const cat of breachedCats) if (i.title.includes(esc(cat))) return false;
-    }
+    // FIX(v3.0): compare categories directly (a substring match on the
+    // title also suppressed "Gas" whenever "Gas Station" changed price).
+    if (i.kind === 'outlier-high' && (priceChangedCats.has(i._category) || breachedCats.has(i._category))) return false;
     return true;
   });
   filtered.sort((a,b) => b.weight - a.weight);
@@ -523,7 +524,7 @@ export function renderInsightsCard(year, monthIdx){
             <div class="insight-title">${i.title}</div>
             <div class="insight-detail">${i.detail}</div>
           </div>
-          ${i._dismissKey ? `<button class="ins-dismiss" type="button" data-key="${i._dismissKey}" aria-label="Dismiss" style="background:none;border:none;color:var(--text-3);font-size:17px;line-height:1;padding:2px 6px;cursor:pointer;flex-shrink:0;align-self:flex-start;">×</button>` : ''}
+          ${i._dismissKey ? `<button class="ins-dismiss" type="button" data-key="${esc(i._dismissKey)}" aria-label="Dismiss" style="background:none;border:none;color:var(--text-3);font-size:17px;line-height:1;padding:2px 6px;cursor:pointer;flex-shrink:0;align-self:flex-start;">×</button>` : ''}
         </div>
       `).join('')}
     </div>

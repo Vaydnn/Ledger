@@ -1,61 +1,181 @@
 /* ============================================================
-   manage.js — misc management sheets bundled together because each
-   is small CRUD/utility: accounts, categories, import/export,
-   backup-as-JSON, reset, about.
+   manage.js — management sheets: accounts, categories, backup &
+   restore, reset, about.
+
+   v3.0:
+   - Accounts can be CLOSED (kept for history, hidden from pickers and
+     Home), MERGED into another account, or deleted only when nothing uses
+     them. Deleting an in-use account used to silently drop its transactions
+     from every balance. Names that transactions still reference but no
+     account has ("missing" — e.g. a deleted card) can be recovered as
+     closed accounts.
+   - Closing an account whose history doesn't end at $0 offers to set the
+     opening balance that makes it end at $0 (tracking usually began after
+     the account already had money in it).
+   - Per-category default accounts (Restaurants → your card) are managed in
+     the Categories sheet.
+   - Excel import/export removed — JSON backups are the one format.
+   - Backup & Restore: save or share (Drive etc.) a JSON file; restore is
+     all-or-nothing and takes an automatic snapshot first, so any restore
+     can be rolled back.
    ============================================================ */
 
-import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, toLocalISO, uid, toast, esc, round2 } from './util.js';
-import { state, STORES, DATA_STORES, dbPut, dbDel, dbClear, dbBulkPut, seedFromJSON, loadState, saveFlags } from './db.js';
-import { invalidateMerchantCache } from './merchants.js';
+import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, uid, toast, esc, round2, fmt, busyGuard, downloadBlob, currentYm } from './util.js';
+import { state, STORES, dbPut, dbDel, dbClear, replaceAllData, loadState, saveFlags, exportData, saveSnapshot, listSnapshots } from './db.js';
+import { invalidateMerchantCache, categoryRuleKey } from './merchants.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
-import { cascadeBalances } from './balances.js';
+import { balanceLatest, firstActivityMonth } from './effects.js';
+import { migrateLegacyBalances, setAnchor, openBalancesSheet } from './balances.js';
+
+const ACCOUNT_TYPES = ['Checking','Savings','Credit Card','Loan'];
+const bulletCls = (type) => type === 'Credit Card' ? 'cc' : (type === 'Loan' ? 'loan' : 'checking');
+
+/* ─── Account references ─────────────────────────── */
+function accountRefs(name){
+  return {
+    txns: state.transactions.filter(t => t.account === name || t.fromAccount === name).length,
+    bills: state.bills.filter(b => b.account === name || b.fromAccount === name || b.linkedAccount === name).length,
+    plans: state.debtPlans.filter(d => d.account === name).length,
+    goals: state.goals.filter(g => g.account === name).length,
+    anchors: state.balanceAnchors.filter(a => a.account === name).length
+  };
+}
+function refsText(r){
+  const parts = [];
+  if (r.txns) parts.push(`${r.txns} transaction${r.txns === 1 ? '' : 's'}`);
+  if (r.bills) parts.push(`${r.bills} bill${r.bills === 1 ? '' : 's'}`);
+  if (r.plans) parts.push(`a debt plan`);
+  if (r.goals) parts.push(`${r.goals} goal${r.goals === 1 ? '' : 's'}`);
+  return parts.join(', ') || 'nothing';
+}
+
+// Names referenced anywhere that have no account record — a deleted
+// account's history (balances can't count it without a type).
+export function missingAccounts(){
+  const known = new Set(state.accounts.map(a => a.name));
+  const counts = {};
+  const note = (n) => { if (n && !known.has(n)) counts[n] = (counts[n] || 0) + 1; };
+  for (const t of state.transactions){ note(t.account); note(t.fromAccount); }
+  for (const b of state.bills){ note(b.account); note(b.fromAccount); note(b.linkedAccount); }
+  for (const d of state.debtPlans) note(d.account);
+  for (const g of state.goals) note(g.account);
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, n }));
+}
+
+// Best guess at a missing account's type, from how its transactions use it.
+function inferAccountType(name){
+  const score = { Checking:0, 'Credit Card':0, Loan:0 };
+  for (const t of state.transactions){
+    if (t.fromAccount === name && ['Transfer','CC Payment','Loan Payment'].includes(t.type)) score.Checking += 2;
+    if (t.account === name && t.type === 'Transfer') score.Checking += 2;
+    if (t.account === name && t.type === 'CC Payment') score['Credit Card'] += 3;
+    if ((t.account === name || t.fromAccount === name) && t.type === 'Balance Transfer') score['Credit Card'] += 3;
+    if (t.account === name && t.type === 'Loan Payment') score.Loan += 3;
+    if (t.account === name && t.type === 'Income') score.Checking += 1;
+  }
+  const [best, pts] = Object.entries(score).sort((a, b) => b[1] - a[1])[0];
+  return pts > 0 ? best : 'Checking';
+}
+
+// Point every reference at a different account name — shared by rename and
+// merge. Returns the number of records touched.
+async function repointAccount(oldName, newName, { moveAnchors = true } = {}){
+  let touched = 0;
+  for (const t of state.transactions){
+    let changed = false;
+    if (t.account === oldName){ t.account = newName; changed = true; }
+    if (t.fromAccount === oldName){ t.fromAccount = newName; changed = true; }
+    if (changed){ await dbPut('transactions', t); touched++; }
+  }
+  for (const b of state.bills){
+    let changed = false;
+    if (b.account === oldName){ b.account = newName; changed = true; }
+    if (b.fromAccount === oldName){ b.fromAccount = newName; changed = true; }
+    if (b.linkedAccount === oldName){ b.linkedAccount = newName; changed = true; }
+    if (changed){ await dbPut('bills', b); touched++; }
+  }
+  for (const dp of state.debtPlans){
+    if (dp.account === oldName){ dp.account = newName; await dbPut('debtPlans', dp); touched++; }
+  }
+  for (const g of state.goals){
+    if (g.account === oldName){ g.account = newName; await dbPut('goals', g); touched++; }
+  }
+  for (const a of [...state.balanceAnchors]){
+    if (a.account !== oldName) continue;
+    if (moveAnchors){ a.account = newName; await dbPut('balanceAnchors', a); }
+    else { await dbDel('balanceAnchors', a.id); state.balanceAnchors = state.balanceAnchors.filter(x => x.id !== a.id); }
+    touched++;
+  }
+  // FIX(v2.10.2): Real Available config keys on names too.
+  const ra = state.flags.realAvailCards || [];
+  let flagsChanged = false;
+  if (ra.includes(oldName)){
+    state.flags.realAvailCards = [...new Set(ra.map(n => n === oldName ? newName : n))];
+    flagsChanged = true; touched++;
+  }
+  // NEW(v3.0): category default accounts too.
+  const rules = state.flags.categoryAccounts || {};
+  for (const k of Object.keys(rules)) if (rules[k] === oldName){ rules[k] = newName; flagsChanged = true; touched++; }
+  if (flagsChanged) await saveFlags();
+  invalidateMerchantCache();
+  return touched;
+}
 
 /* ─── Accounts ─────────────────────────── */
 export function openAccountsSheet(){
+  const open = state.accounts.filter(a => a.active);
+  const closed = state.accounts.filter(a => !a.active);
+  const missing = missingAccounts();
+  const row = (a) => `
+    <div class="menu-item" style="padding:14px;margin-bottom:6px;">
+      <span class="l">
+        <span class="acct-bullet ${bulletCls(a.type)}" style="margin-right:4px;"></span>
+        <div>
+          <div style="font-size:14px;font-weight:500;">${esc(a.name)}</div>
+          <div class="muted small">${esc(a.type)}${a.active ? '' : ' · closed' + (a.closedAt ? ' ' + esc(a.closedAt) : '')}</div>
+        </div>
+      </span>
+      <button class="btn ghost a-edit" data-id="${esc(a.id)}" style="width:auto;padding:7px 12px;font-size:12px;">Edit</button>
+    </div>`;
   $('#sheetBody').innerHTML = `
     <h2>Accounts</h2>
-    <div id="acct-list">
-      ${state.accounts.map(a => {
-        const bulletCls = a.type==='Credit Card'?'cc':(a.type==='Loan'?'loan':'checking');
-        return `
+    ${open.map(row).join('') || '<div class="muted small" style="margin-bottom:10px;">No open accounts.</div>'}
+    <button class="btn" id="a-add" style="margin-top:6px;">+ Add Account</button>
+    ${closed.length ? `
+      <div class="section-label">Closed · kept for history</div>
+      ${closed.map(row).join('')}` : ''}
+    ${missing.length ? `
+      <div class="section-label">Missing · deleted but still in your history</div>
+      <div class="muted small" style="margin-bottom:8px;line-height:1.5;">These names appear on transactions or bills but have no account, so balances can't count them. Recover one as a closed account to put its history back.</div>
+      ${missing.map(m => `
         <div class="menu-item" style="padding:14px;margin-bottom:6px;">
-          <span class="l">
-            <span class="acct-bullet ${bulletCls}" style="margin-right:4px;"></span>
-            <div>
-              <div style="font-size:14px;font-weight:500;">${esc(a.name)}</div>
-              <div class="muted small">${a.type}${a.active?'':' · inactive'}</div>
-            </div>
-          </span>
-          <button class="btn ghost a-edit" data-id="${a.id}" style="width:auto;padding:7px 12px;font-size:12px;">Edit</button>
-        </div>
-      `;
-      }).join('')}
-    </div>
-    <button class="btn" id="a-add">+ Add Account</button>
+          <span class="l"><div>
+            <div style="font-size:14px;font-weight:500;">${esc(m.name)}</div>
+            <div class="muted small">${m.n} reference${m.n === 1 ? '' : 's'}</div>
+          </div></span>
+          <button class="btn secondary a-recover" data-name="${esc(m.name)}" style="width:auto;padding:7px 12px;font-size:12px;">Recover</button>
+        </div>`).join('')}` : ''}
   `;
   openSheet();
   $$('.a-edit').forEach(b => b.addEventListener('click', () => editAccount(b.dataset.id)));
   $('#a-add').addEventListener('click', () => editAccount(null));
+  $$('.a-recover').forEach(b => b.addEventListener('click', () => recoverAccount(b.dataset.name)));
 }
-/* FIX(v1.2): renaming an account used to silently orphan every reference to
-   the old name — transactions, starting balances, bills (account / fromAccount
-   / linkedAccount), and debt plans all key on the name string, so a rename
-   broke balances with no warning. Renames now cascade through all stores.
-   FIX(v1.2): the Type and Active native <select>s are replaced with the
-   bottom-sheet picker / segmented control (no-native-select rule, Samsung
-   Internet standalone reliability). */
+
+/* FIX(v1.2): renames cascade through every store that keys on the name.
+   NEW(v3.0): Close / Reopen / Merge, and delete only when unused. */
 function editAccount(id){
   const existing = id ? state.accounts.find(x => x.id === id) : null;
   const f = {
     name: existing?.name || '',
     type: existing?.type || 'Checking',
-    active: existing ? !!existing.active : true,
     notes: existing?.notes || ''
   };
 
   function render(){
     $('#sheetBody').innerHTML = `
       <h2>${id ? 'Edit' : 'New'} Account</h2>
+      ${existing && !existing.active ? `<div class="muted small" style="margin-bottom:12px;">Closed${existing.closedAt ? ' ' + esc(existing.closedAt) : ''} — kept for history, hidden from pickers and Home.</div>` : ''}
       <div class="field"><label>Name</label><input class="input" id="ae-name" value="${esc(f.name)}" /></div>
       <div class="field">
         <label>Type</label>
@@ -64,54 +184,54 @@ function editAccount(id){
           <span class="picker-chev">▾</span>
         </button>
       </div>
-      <div class="field">
-        <label>Active?</label>
-        <div class="seg" id="ae-active" role="tablist">
-          <button type="button" class="seg-btn ${f.active?'active':''}" data-active="true">Yes</button>
-          <button type="button" class="seg-btn ${!f.active?'active':''}" data-active="false">No</button>
-        </div>
-      </div>
       <div class="field"><label>Notes</label><input class="input" id="ae-notes" value="${esc(f.notes)}" /></div>
       <button class="btn" id="ae-save">Save</button>
-      ${id ? '<button class="btn danger" id="ae-del" style="margin-top:10px;">Delete</button>' : ''}
+      ${existing ? `
+        ${existing.active
+          ? '<button class="btn secondary" id="ae-close" style="margin-top:10px;">Close account…</button>'
+          : '<button class="btn secondary" id="ae-reopen" style="margin-top:10px;">Reopen account</button>'}
+        <button class="btn ghost" id="ae-balances" style="margin-top:10px;">Opening balance…</button>
+        <button class="btn danger" id="ae-del" style="margin-top:10px;">Delete…</button>` : ''}
       <button class="btn ghost" id="ae-back" style="margin-top:10px;">Back</button>
     `;
     $('#ae-name').addEventListener('input', e => f.name = e.target.value);
     $('#ae-notes').addEventListener('input', e => f.notes = e.target.value);
     $('#ae-type').addEventListener('click', () => {
-      openPicker('Account Type', ['Checking','Savings','Credit Card','Loan'], f.type, (val) => {
+      openPicker('Account Type', ACCOUNT_TYPES, f.type, (val) => {
         f.type = val;
         render();
       });
     });
-    $$('.seg-btn', $('#ae-active')).forEach(btn => btn.addEventListener('click', () => {
-      f.active = btn.dataset.active === 'true';
-      $$('.seg-btn', $('#ae-active')).forEach(x => x.classList.toggle('active', x === btn));
-    }));
     $('#ae-save').addEventListener('click', save);
-    if (id){
-      $('#ae-del').addEventListener('click', async () => {
-        if (!confirm('Delete this account? Transactions referencing it will keep the name.')) return;
-        await dbDel('accounts', id);
-        state.accounts = state.accounts.filter(x => x.id !== id);
-        openAccountsSheet(); toast('Deleted');
-      });
-    }
+    $('#ae-close')?.addEventListener('click', () => openCloseAccountSheet(existing));
+    $('#ae-reopen')?.addEventListener('click', busyGuard(async () => {
+      existing.active = true;
+      delete existing.closedAt;
+      await dbPut('accounts', existing);
+      toast(`${existing.name} reopened`);
+      openAccountsSheet();
+    }));
+    $('#ae-balances')?.addEventListener('click', () => openBalancesSheet(existing.name));
+    $('#ae-del')?.addEventListener('click', () => openDeleteAccountSheet(existing));
     $('#ae-back').addEventListener('click', openAccountsSheet);
   }
 
-  async function save(){
+  const save = busyGuard(async () => {
     const newName = f.name.trim();
     if (!newName) { toast('Name required'); return; }
     const oldName = existing?.name || null;
     const clash = state.accounts.find(x => x.name === newName && x.id !== (id || ''));
     if (clash){ toast('An account with that name already exists'); return; }
+    if (existing && existing.type !== f.type && accountRefs(existing.name).txns){
+      if (!confirm(`Change ${existing.name} from ${existing.type} to ${f.type}?\n\nIts transactions will count the other way — e.g. an expense lowers a checking balance but raises a card's balance owed.`)) return;
+    }
 
     const obj = {
+      ...(existing || {}),
       id: id || uid(),
       name: newName,
       type: f.type,
-      active: f.active,
+      active: existing ? existing.active : true,
       notes: f.notes.trim(),
       order: existing?.order ?? state.accounts.length
     };
@@ -120,68 +240,168 @@ function editAccount(id){
     if (i >= 0) state.accounts[i] = obj; else state.accounts.push(obj);
     state.accounts.sort(alphaSortBy('name'));
 
-    // Cascade a rename through every store that references the name.
     if (oldName && oldName !== newName){
-      let touched = 0;
-      for (const t of state.transactions){
-        let changed = false;
-        if (t.account === oldName){ t.account = newName; changed = true; }
-        if (t.fromAccount === oldName){ t.fromAccount = newName; changed = true; }
-        if (changed){ await dbPut('transactions', t); touched++; }
-      }
-      for (const sb of state.startingBalances){
-        if (sb.account === oldName){ sb.account = newName; await dbPut('startingBalances', sb); touched++; }
-      }
-      for (const b of state.bills){
-        let changed = false;
-        if (b.account === oldName){ b.account = newName; changed = true; }
-        if (b.fromAccount === oldName){ b.fromAccount = newName; changed = true; }
-        if (b.linkedAccount === oldName){ b.linkedAccount = newName; changed = true; }
-        if (changed){ await dbPut('bills', b); touched++; }
-      }
-      for (const dp of state.debtPlans){
-        if (dp.account === oldName){ dp.account = newName; await dbPut('debtPlans', dp); touched++; }
-      }
-      // NEW(v2.0): goals can be linked to an account by name.
-      for (const g of state.goals){
-        if (g.account === oldName){ g.account = newName; await dbPut('goals', g); touched++; }
-      }
-      // FIX(v2.10.2): the Real Available config (flags.realAvailCards) also
-      // keys on account names — a renamed card silently dropped out of the
-      // calculation, inflating "Real available" on Home and Bills.
-      const ra = state.flags.realAvailCards || [];
-      if (ra.includes(oldName)){
-        state.flags.realAvailCards = ra.map(n => n === oldName ? newName : n);
-        await saveFlags();
-        touched++;
-      }
-      invalidateMerchantCache();
+      const touched = await repointAccount(oldName, newName);
       toast(touched ? `Saved · updated ${touched} linked record${touched===1?'':'s'}` : 'Saved');
-      openAccountsSheet();
-      return;
-    }
-    openAccountsSheet(); toast('Saved');
-  }
+    } else toast('Saved');
+    openAccountsSheet();
+  });
 
   render();
 }
 
+/* ── NEW(v3.0): close an account ───────────────────────────────────── */
+function openCloseAccountSheet(acct){
+  const bal = balanceLatest(acct.name);
+  const zero = Math.abs(bal) < 0.005;
+  const isDebt = acct.type === 'Credit Card' || acct.type === 'Loan';
+  $('#sheetBody').innerHTML = `
+    <h2>Close ${esc(acct.name)}</h2>
+    <div class="muted small" style="margin-bottom:14px;line-height:1.55;">
+      A closed account keeps all of its history (reports, past months, search) but disappears from pickers, Home, and Real Available.
+    </div>
+    ${zero ? `
+      <div class="debt-good" style="margin-bottom:14px;">Balance is $0.00 — ready to close.</div>
+      <button class="btn" id="cl-close">Close account</button>
+    ` : `
+      <div class="card" style="margin-bottom:14px;">
+        <div class="muted small">Its history currently ends at</div>
+        <div class="mono" style="font-size:22px;margin-top:4px;">${fmt(bal)}${isDebt ? ' owed' : ''}</div>
+        <div class="muted small" style="margin-top:8px;line-height:1.5;">
+          A closed account should end at $0. If it already had ${isDebt ? 'a balance' : 'money in it'} when you started tracking, the missing piece is its <b>opening balance</b>.
+        </div>
+      </div>
+      <button class="btn" id="cl-fix">Set opening balance so it ends at $0</button>
+      <button class="btn secondary" id="cl-close" style="margin-top:10px;">Close anyway (keep ${fmt(bal)})</button>
+    `}
+    <button class="btn ghost" id="cl-back" style="margin-top:10px;">Back</button>
+  `;
+  openSheet();
+  const doClose = async () => {
+    acct.active = false;
+    acct.closedAt = today();
+    await dbPut('accounts', acct);
+    // A closed card can't stay in the Real Available deduction.
+    if ((state.flags.realAvailCards || []).includes(acct.name)){
+      state.flags.realAvailCards = state.flags.realAvailCards.filter(n => n !== acct.name);
+      await saveFlags();
+    }
+  };
+  $('#cl-close').addEventListener('click', busyGuard(async () => {
+    await doClose();
+    toast(`${acct.name} closed`);
+    openAccountsSheet();
+  }));
+  $('#cl-fix')?.addEventListener('click', busyGuard(async () => {
+    await zeroOutWithOpening(acct.name);
+    await doClose();
+    toast(`Opening balance set · ${acct.name} closed at $0.00`);
+    openAccountsSheet();
+  }));
+  $('#cl-back').addEventListener('click', () => editAccount(acct.id));
+}
+
+// Adjust (or create) the account's EARLIEST pinned opening so its history
+// ends at exactly $0.
+async function zeroOutWithOpening(name){
+  const bal = balanceLatest(name);
+  const pins = state.balanceAnchors.filter(a => a.account === name).sort((a, b) => a.month.localeCompare(b.month));
+  const first = pins[0];
+  const month = first ? first.month : (firstActivityMonth(name) || currentYm());
+  await setAnchor(name, month, round2((first ? first.amount : 0) - bal));
+}
+
+/* ── NEW(v3.0): delete — only when unused; otherwise close or merge ──── */
+function openDeleteAccountSheet(acct){
+  const refs = accountRefs(acct.name);
+  if (!refs.txns && !refs.bills && !refs.plans && !refs.goals){
+    if (!confirm(`Delete ${acct.name}? Nothing uses it.`)) return;
+    (async () => {
+      for (const a of state.balanceAnchors.filter(x => x.account === acct.name)) await dbDel('balanceAnchors', a.id);
+      state.balanceAnchors = state.balanceAnchors.filter(x => x.account !== acct.name);
+      await dbDel('accounts', acct.id);
+      state.accounts = state.accounts.filter(x => x.id !== acct.id);
+      toast('Deleted');
+      openAccountsSheet();
+    })();
+    return;
+  }
+  const others = state.accounts.filter(a => a.id !== acct.id);
+  $('#sheetBody').innerHTML = `
+    <h2>Delete ${esc(acct.name)}?</h2>
+    <div class="card" style="margin-bottom:14px;line-height:1.55;">
+      ${esc(acct.name)} is used by <b>${refsText(refs)}</b>. Deleting it outright would drop all of that from every balance.
+    </div>
+    <button class="btn" id="dl-close">${acct.active ? 'Close it instead (keeps history)' : 'Keep it closed'}</button>
+    ${others.length ? `<button class="btn secondary" id="dl-merge" style="margin-top:10px;">Move everything to another account…</button>
+    <div class="muted small" style="margin:8px 2px 0;line-height:1.5;">Merge when these transactions really belong to another account (e.g. a duplicate). The other account's balance will include them.</div>` : ''}
+    <button class="btn ghost" id="dl-back" style="margin-top:12px;">Back</button>
+  `;
+  openSheet();
+  $('#dl-close').addEventListener('click', () => acct.active ? openCloseAccountSheet(acct) : openAccountsSheet());
+  $('#dl-merge')?.addEventListener('click', () => {
+    openPicker(`Move ${acct.name}'s history to…`, others.map(a => a.name), null, busyGuard(async (target) => {
+      if (!confirm(`Move ${refsText(refs)} from ${acct.name} to ${target}, then delete ${acct.name}?`)) { openDeleteAccountSheet(acct); return; }
+      const touched = await repointAccount(acct.name, target, { moveAnchors: false });
+      await dbDel('accounts', acct.id);
+      state.accounts = state.accounts.filter(x => x.id !== acct.id);
+      toast(`Moved ${touched} record${touched === 1 ? '' : 's'} to ${target} · ${acct.name} deleted`);
+      openAccountsSheet();
+    }));
+  });
+  $('#dl-back').addEventListener('click', () => editAccount(acct.id));
+}
+
+/* ── NEW(v3.0): recover a missing (deleted-but-referenced) account ───── */
+function recoverAccount(name){
+  const f = { type: inferAccountType(name) };
+  const render = () => {
+    $('#sheetBody').innerHTML = `
+      <h2>Recover ${esc(name)}</h2>
+      <div class="muted small" style="margin-bottom:14px;line-height:1.55;">
+        Re-creates the account as <b>closed</b>, so its transactions count toward balances again (and transfers into or out of it balance on both sides).
+      </div>
+      <div class="field">
+        <label>Account type <span class="muted small">(guessed from its transactions)</span></label>
+        <button class="input picker-btn" id="rv-type" type="button">
+          <span class="picker-val">${esc(f.type)}</span><span class="picker-chev">▾</span>
+        </button>
+      </div>
+      <button class="btn" id="rv-go">Recover as closed account</button>
+      <button class="btn ghost" id="rv-back" style="margin-top:10px;">Back</button>
+    `;
+    $('#rv-type').addEventListener('click', () => openPicker('Account Type', ACCOUNT_TYPES, f.type, (v) => { f.type = v; render(); }));
+    $('#rv-go').addEventListener('click', busyGuard(async () => {
+      const acct = { id: uid(), name, type: f.type, active: true, notes: 'Recovered in v3.0', order: state.accounts.length };
+      await dbPut('accounts', acct);
+      state.accounts.push(acct);
+      state.accounts.sort(alphaSortBy('name'));
+      openCloseAccountSheet(acct);   // same balance check as any close
+    }));
+    $('#rv-back').addEventListener('click', openAccountsSheet);
+  };
+  render();
+  openSheet();
+}
+
 /* ─── Categories ─────────────────────────── */
+const CAT_TYPES = [
+  ['Expense','Expense'], ['Income','Income'], ['Refund','Refund'], ['Investment','Investment'],
+  ['CCPayment','CC Payment'], ['LoanPayment','Loan Payment'], ['Transfer','Transfer'], ['BalanceTransfer','Balance Transfer']
+];
+const typeOfKey = Object.fromEntries(CAT_TYPES);
+// Category lists whose transactions pick an account freely — the ones a
+// default account makes sense for.
+const RULE_KEYS = new Set(['Expense','Income','Refund']);
+
 export function openCategoriesSheet(){
-  const types = [
-    ['Expense','Expense'],
-    ['Income','Income'],
-    ['Refund','Refund'],
-    ['Investment','Investment'],
-    ['CCPayment','CC Payment'],
-    ['LoanPayment','Loan Payment'],
-    ['Transfer','Transfer'],
-    ['BalanceTransfer','Balance Transfer']
-  ];
+  const rules = state.flags.categoryAccounts || {};
   $('#sheetBody').innerHTML = `
     <h2>Categories</h2>
-    <div class="muted small" style="margin-bottom:14px;">Categories are shown alphabetically throughout the app.</div>
-    ${types.map(([k, label]) => {
+    <div class="muted small" style="margin-bottom:14px;line-height:1.5;">
+      Shown alphabetically everywhere. <b>→ account</b> sets a default: picking that category on the Add form switches to that account.
+    </div>
+    ${CAT_TYPES.map(([k, label]) => {
       const list = (state.categories[k]||[]).slice().sort(alphaSort);
       const defaults = DEFAULT_CATEGORIES[k] || [];
       const isEmpty = list.length === 0;
@@ -189,12 +409,15 @@ export function openCategoriesSheet(){
       <div class="card" style="margin-bottom:10px;">
         <h3 class="card-title">${label}${isEmpty && defaults.length ? ` <button class="c-restore-one" data-type="${k}" style="background:none;border:1px solid var(--ember);color:var(--ember);padding:3px 8px;border-radius:999px;font-size:10px;letter-spacing:.08em;cursor:pointer;">Restore ${defaults.length}</button>` : ''}</h3>
         <div id="cat-${k}">
-          ${list.map(c => `
+          ${list.map(c => {
+            const rule = RULE_KEYS.has(k) ? rules[categoryRuleKey(typeOfKey[k], c)] : null;
+            return `
             <div style="display:flex;align-items:center;gap:8px;padding:6px 0;">
-              <input class="input" data-cat-type="${k}" data-cat-old="${esc(c)}" value="${esc(c)}" style="flex:1;padding:8px 10px;font-size:13px;" />
+              <input class="input" data-cat-type="${k}" data-cat-old="${esc(c)}" value="${esc(c)}" style="flex:1;min-width:0;padding:8px 10px;font-size:13px;" />
+              ${RULE_KEYS.has(k) ? `<button class="cat-rule ${rule ? 'on' : ''}" data-type="${k}" data-cat="${esc(c)}" type="button">${rule ? '→ ' + esc(rule) : '→ account'}</button>` : ''}
               <button class="btn danger c-del" data-type="${k}" data-cat="${esc(c)}" style="width:auto;padding:6px 10px;font-size:12px;">×</button>
-            </div>
-          `).join('')}
+            </div>`;
+          }).join('')}
           ${isEmpty ? `<div class="muted small" style="padding:8px 0;font-style:italic;">No categories. Add one below or tap Restore ${defaults.length}.</div>` : ''}
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;">
@@ -208,11 +431,29 @@ export function openCategoriesSheet(){
     <button class="btn ghost" id="c-restore-all" style="margin-top:8px;">Restore ALL defaults (merges missing)</button>
   `;
   openSheet();
+
+  // NEW(v3.0): per-category default account.
+  $$('.cat-rule').forEach(b => b.addEventListener('click', () => {
+    const type = typeOfKey[b.dataset.type], cat = b.dataset.cat;
+    const NONE = 'No default (use history)';
+    const opts = [NONE, ...state.accounts.filter(a => a.active).map(a => a.name)];
+    const key = categoryRuleKey(type, cat);
+    openPicker(`${cat} → default account`, opts, (state.flags.categoryAccounts || {})[key] || NONE, async (val) => {
+      const next = { ...(state.flags.categoryAccounts || {}) };
+      if (val === NONE) delete next[key]; else next[key] = val;
+      state.flags.categoryAccounts = next;
+      await saveFlags();
+      toast(val === NONE ? `${cat}: no default account` : `${cat} → ${val}`);
+      openCategoriesSheet();
+    });
+  }));
+
   $$('.c-add').forEach(b => b.addEventListener('click', async () => {
     const t = b.dataset.type;
     const inp = b.parentElement.querySelector('.c-new');
     const v = inp.value.trim();
     if (!v) return;
+    if ((state.categories[t] || []).includes(v)){ toast(`"${v}" already exists`); return; }
     const list = [...(state.categories[t]||[]), v].sort(alphaSort);
     state.categories[t] = list;
     await dbPut('categories', { id:t, list });
@@ -220,18 +461,13 @@ export function openCategoriesSheet(){
   }));
   $$('.c-del').forEach(b => b.addEventListener('click', async () => {
     const t = b.dataset.type, c = b.dataset.cat;
-    // NEW(v2.0): delete-with-reassignment. Deleting a category that's in use
-    // used to orphan its transactions (they kept the label but fell out of
-    // budgets/breakdown grouping). Now: if the category has transactions,
-    // pick a replacement and everything — txns + budgets — moves over.
-    const typeMap = { Expense:'Expense', Income:'Income', Refund:'Refund', Investment:'Investment',
-                      CCPayment:'CC Payment', LoanPayment:'Loan Payment', Transfer:'Transfer', BalanceTransfer:'Balance Transfer' };
-    const txnType = typeMap[t];
+    const txnType = typeOfKey[t];
     const used = state.transactions.filter(x => x.type === txnType && x.category === c);
     if (used.length === 0){
       if (!confirm(`Delete "${c}"?`)) return;
       state.categories[t] = state.categories[t].filter(x => x !== c);
       await dbPut('categories', { id:t, list:state.categories[t] });
+      await renameCategoryRefs(t, c, null);
       openCategoriesSheet();
       return;
     }
@@ -241,16 +477,14 @@ export function openCategoriesSheet(){
       return;
     }
     if (!confirm(`"${c}" is used by ${used.length} transaction${used.length===1?'':'s'}.\n\nPick a category to move them to — this also merges any budget. Cancel to keep "${c}".`)) return;
-    openPicker(`Move "${c}" transactions to…`, others, null, async (target) => {
-      // Transactions
+    openPicker(`Move "${c}" transactions to…`, others, null, busyGuard(async (target) => {
       for (const x of used){
         x.category = target;
         await dbPut('transactions', x);
       }
-      // Budgets: merge month-by-month if the target already has one,
-      // otherwise the old budget is just relabeled.
-      const oldB = state.budgets.find(bb => bb.type === t && bb.category === c);
-      if (oldB){
+      // Budgets: merge month-by-month into an existing target budget (same
+      // year), otherwise relabel.
+      for (const oldB of state.budgets.filter(bb => bb.type === t && bb.category === c)){
         const targetB = state.budgets.find(bb => bb.type === t && bb.category === target && bb.year === oldB.year);
         if (targetB){
           monthAbbr.forEach(m => targetB.amounts[m] = round2((targetB.amounts[m]||0) + (oldB.amounts[m]||0)));
@@ -262,13 +496,13 @@ export function openCategoriesSheet(){
           await dbPut('budgets', oldB);
         }
       }
-      // Category list
       state.categories[t] = state.categories[t].filter(x => x !== c);
       await dbPut('categories', { id:t, list:state.categories[t] });
+      await renameCategoryRefs(t, c, target);
       invalidateMerchantCache();
       toast(`Moved ${used.length} to "${target}" · "${c}" deleted`);
       openCategoriesSheet();
-    });
+    }));
   }));
   $$('.c-restore-one').forEach(b => b.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -294,109 +528,77 @@ export function openCategoriesSheet(){
     toast(added ? `Added ${added} missing categories` : 'Nothing to add — all defaults present');
     openCategoriesSheet();
   });
-  // FIX(v1.2): renaming a category only updated the category list — existing
-  // transactions and budgets kept the old label, so budget tracking and the
-  // breakdown silently lost them. The data-cat-old attribute (already stored,
-  // never used) now drives a rename cascade through transactions + budgets.
-  $('#c-save-all').addEventListener('click', async () => {
+  // FIX(v1.2): renames cascade through transactions + budgets (+ v3.0:
+  // default-account rules and refund budget links).
+  $('#c-save-all').addEventListener('click', busyGuard(async () => {
     let cascaded = 0;
-    for (const [k] of types){
+    for (const [k] of CAT_TYPES){
       const inputs = $$(`input[data-cat-type="${k}"]`);
       const renames = [];
       const list = [];
       for (const inp of inputs){
         const nv = inp.value.trim();
         if (!nv) continue;
-        list.push(nv);
+        if (!list.includes(nv)) list.push(nv);   // FIX(v3.0): renaming onto an existing name merges, no duplicate
         const old = inp.dataset.catOld;
         if (old && old !== nv) renames.push([old, nv]);
       }
       state.categories[k] = list.sort(alphaSort);
       await dbPut('categories', { id:k, list: state.categories[k] });
 
-      if (renames.length){
-        // Category type keys map to transaction type strings
-        const typeMap = { Expense:'Expense', Income:'Income', Refund:'Refund', Investment:'Investment',
-                          CCPayment:'CC Payment', LoanPayment:'Loan Payment', Transfer:'Transfer', BalanceTransfer:'Balance Transfer' };
-        const txnType = typeMap[k];
-        for (const [oldC, newC] of renames){
-          for (const t of state.transactions){
-            if (t.type === txnType && t.category === oldC){
-              t.category = newC;
-              await dbPut('transactions', t);
-              cascaded++;
-            }
-          }
-          for (const b of state.budgets){
-            // Budget types are only ever Expense / Income / Investment, which
-            // match their category-list keys directly.
-            if (b.type === k && b.category === oldC){
-              b.category = newC;
-              await dbPut('budgets', b);
-              cascaded++;
-            }
+      const txnType = typeOfKey[k];
+      for (const [oldC, newC] of renames){
+        for (const t of state.transactions){
+          if (t.type === txnType && t.category === oldC){
+            t.category = newC;
+            await dbPut('transactions', t);
+            cascaded++;
           }
         }
+        for (const b of state.budgets){
+          if (b.type === k && b.category === oldC){
+            b.category = newC;
+            await dbPut('budgets', b);
+            cascaded++;
+          }
+        }
+        cascaded += await renameCategoryRefs(k, oldC, newC);
       }
     }
     invalidateMerchantCache();
     toast(cascaded ? `Saved · updated ${cascaded} record${cascaded===1?'':'s'}` : 'Saved');
     openCategoriesSheet();
-  });
+  }));
 }
 
-/* ─── XLSX Export ─────────────────────────── */
-export async function exportXLSX(){
-  if (typeof XLSX === 'undefined') { toast('Excel library not loaded'); return; }
-  const wb = XLSX.utils.book_new();
-  const txnRows = [['Date','Type','Account','Category','Description','Amount','From Account']];
-  state.transactions.forEach(t => txnRows.push([t.date, t.type, t.account, t.category||'', t.description||'', t.amount, t.fromAccount||'']));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(txnRows), 'Transactions');
-  const acctRows = [['Name','Type','Active','Notes']];
-  state.accounts.forEach(a => acctRows.push([a.name, a.type, a.active?'Yes':'No', a.notes||'']));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(acctRows), 'Accounts');
-  const bRows = [['Type','Category', ...monthAbbr.map(m => m.toUpperCase())]];
-  state.budgets.forEach(b => bRows.push([b.type, b.category, ...monthAbbr.map(m => b.amounts[m]||0)]));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(bRows), 'Budgets');
-  const sbRows = [['Account', ...monthAbbr.map(m => m.toUpperCase())]];
-  state.startingBalances.forEach(s => sbRows.push([s.account, ...monthAbbr.map(m => s[m]||0)]));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sbRows), 'Balances');
-  const nwRows = [['Date','Checking','Savings','Investments','CC Debt','Other Debt','Notes']];
-  state.netWorth.forEach(n => nwRows.push([n.date, n.checking, n.savings, n.investments, n.ccDebt, n.otherDebt, n.notes||'']));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(nwRows), 'Net Worth');
-  const dpRows = [['Account','Original','APR','Min Payment','Promo Ends','Target Payoff','Notes']];
-  state.debtPlans.forEach(d => dpRows.push([d.account, d.originalBalance, d.apr, d.minPayment, d.promoEndDate||'', d.targetPayoffDate||'', d.notes||'']));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(dpRows), 'Debt Plans');
-  const blRows = [['Name','Amount','Due Day','Recurrence','Due Date','Linked Account','Close Day','Grace Days','Type','Account','From Account','Category','Active']];
-  state.bills.forEach(b => blRows.push([
-    b.name, b.amount, b.dueDay,
-    b.recurrence||'monthly', b.dueDate||'',
-    b.linkedAccount||'', b.closeDay||'', b.graceDays!=null?b.graceDays:'',
-    b.type, b.account, b.fromAccount||'', b.category||'',
-    b.active!==false?'Yes':'No'
-  ]));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(blRows), 'Bills');
-  // NEW(v2.0): goals round-trip through export/import like everything else.
-  const gRows = [['Name','Target','Account','Saved','Target Date','Archived']];
-  state.goals.forEach(g => gRows.push([g.name, g.target, g.account||'', g.saved||0, g.targetDate||'', g.archived?'Yes':'No']));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(gRows), 'Goals');
-  const catRows = [['Type','Category']];
-  for (const [typ, list] of Object.entries(state.categories || {})){
-    (list || []).forEach(c => catRows.push([typ, c]));
+// NEW(v3.0): category names also live in default-account rules and in
+// refunds' "gives back to budget" links. newName null = category deleted.
+async function renameCategoryRefs(listKey, oldName, newName){
+  let n = 0;
+  const type = typeOfKey[listKey];
+  const rules = { ...(state.flags.categoryAccounts || {}) };
+  const oldKey = categoryRuleKey(type, oldName);
+  if (rules[oldKey]){
+    if (newName && !rules[categoryRuleKey(type, newName)]) rules[categoryRuleKey(type, newName)] = rules[oldKey];
+    delete rules[oldKey];
+    state.flags.categoryAccounts = rules;
+    await saveFlags();
+    n++;
   }
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(catRows), 'Categories');
-
-  const date = today();
-  XLSX.writeFile(wb, `ledger-export-${date}.xlsx`);
-  await markBackedUp(); // NEW(v2.9.2): a full xlsx export counts as a backup
-  toast('Exported');
+  if (listKey === 'Expense'){
+    for (const t of state.transactions){
+      if (t.type === 'Refund' && t.offsetCategory === oldName){
+        if (newName) t.offsetCategory = newName; else delete t.offsetCategory;
+        await dbPut('transactions', t);
+        n++;
+      }
+    }
+  }
+  return n;
 }
 
-/* ── NEW(v2.9.2): backup age tracking + nudge ────────────────────────
-   The entire ledger lives in one IndexedDB. Backups existed but their
-   staleness was invisible — this stamps every export, shows the age in
-   the More footer, and nudges (at most once a week) when the newest
-   backup is 30+ days old or there has never been one. */
+/* ─── Backup & Restore (JSON only) ─────────────────────────── */
+/* NEW(v2.9.2): backup age tracking + nudge. */
 export async function markBackedUp(){
   state.flags.lastBackupAt = Date.now();
   await saveFlags();
@@ -420,295 +622,152 @@ export async function maybeBackupNudge(){
   state.flags.lastBackupNudge = Date.now();
   await saveFlags();
   setTimeout(() => toast(last
-    ? `Backup is ${Math.floor(ageDays)} days old — More → Backup as JSON`
-    : 'No backup yet — More → Backup as JSON'), 1400);
+    ? `Backup is ${Math.floor(ageDays)} days old — More → Backup & Restore`
+    : 'No backup yet — More → Backup & Restore'), 1400);
 }
 
-export async function importXLSX(onImported){
-  const input = document.createElement('input');
-  input.type = 'file'; input.accept = '.xlsx,.xls';
-  input.onchange = async () => {
-    const file = input.files[0]; if (!file) return;
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type:'array', cellDates:true });
-    if (!confirm('This replaces ALL current data. Continue?')) return;
-    const seed = parseWorkbookToSeed(wb);
-    await seedFromJSON(seed);
-    await loadState();
-    invalidateMerchantCache();
-    if (typeof onImported === 'function') onImported();
-    toast('Imported');
-  };
-  input.click();
+function backupFile(){
+  const json = JSON.stringify(exportData(), null, 2);
+  return { json, name: `ledger-backup-${today()}.json` };
 }
 
-function parseWorkbookToSeed(wb){
-  const seed = { accounts:[], categories:{Expense:[],Income:[],Refund:[],Investment:[],CCPayment:[],Transfer:[],BalanceTransfer:[],LoanPayment:[]}, budgets:[], startingBalances:{}, transactions:[], netWorth:[], debtPlans:[], bills:[], goals:[], meta:{trackingYear:state.selected.year} };
-  const sheets = wb.SheetNames;
-  if (sheets.includes('Accounts') && sheets.includes('Transactions')){
-    const a = XLSX.utils.sheet_to_json(wb.Sheets['Accounts']);
-    a.forEach(r => seed.accounts.push({ name:r.Name, type:r.Type, active:r.Active==='Yes', notes:r.Notes||'' }));
-    const t = XLSX.utils.sheet_to_json(wb.Sheets['Transactions']);
-    t.forEach(r => {
-      const d = r.Date instanceof Date ? toLocalISO(r.Date) : String(r.Date).slice(0,10);
-      seed.transactions.push({ date:d, type:r.Type, account:r.Account, category:r.Category||'', description:r.Description||'', amount:Number(r.Amount), fromAccount:r['From Account']||null });
-    });
-    if (sheets.includes('Budgets')){
-      const b = XLSX.utils.sheet_to_json(wb.Sheets['Budgets']);
-      b.forEach(r => {
-        const amounts = {}; monthAbbr.forEach(m => amounts[m] = Number(r[m.toUpperCase()])||0);
-        seed.budgets.push({ type:r.Type, category:r.Category, amounts });
-      });
-    }
-    if (sheets.includes('Balances')){
-      const b = XLSX.utils.sheet_to_json(wb.Sheets['Balances']);
-      b.forEach(r => {
-        const obj = {}; monthAbbr.forEach(m => obj[m] = Number(r[m.toUpperCase()])||0);
-        seed.startingBalances[r.Account] = obj;
-      });
-    }
-    if (sheets.includes('Categories')){
-      const c = XLSX.utils.sheet_to_json(wb.Sheets['Categories']);
-      c.forEach(r => {
-        if (r.Type && r.Category && seed.categories[r.Type] !== undefined){
-          seed.categories[r.Type].push(r.Category);
-        }
-      });
-    }
-    // FIX(v1.2): the exporter wrote Bills, Net Worth, and Debt Plans sheets,
-    // but the importer never read them — a full export → import round-trip
-    // silently dropped all three. They're now parsed back in.
-    if (sheets.includes('Bills')){
-      const b = XLSX.utils.sheet_to_json(wb.Sheets['Bills']);
-      b.forEach(r => {
-        if (!r.Name) return;
-        seed.bills.push({
-          name: r.Name,
-          amount: Number(r.Amount) || 0,
-          dueDay: Number(r['Due Day']) || 1,
-          recurrence: r.Recurrence || 'monthly',
-          dueDate: r['Due Date'] ? String(r['Due Date']).slice(0,10) : '',
-          linkedAccount: r['Linked Account'] || '',
-          closeDay: Number(r['Close Day']) || 0,
-          graceDays: r['Grace Days'] === '' || r['Grace Days'] == null ? 0 : Number(r['Grace Days']),
-          type: r.Type || 'Expense',
-          account: r.Account || '',
-          fromAccount: r['From Account'] || null,
-          category: r.Category || '',
-          active: r.Active !== 'No'
-        });
-      });
-    }
-    if (sheets.includes('Net Worth')){
-      const n = XLSX.utils.sheet_to_json(wb.Sheets['Net Worth']);
-      n.forEach(r => {
-        if (!r.Date) return;
-        seed.netWorth.push({
-          date: r.Date instanceof Date ? toLocalISO(r.Date) : String(r.Date).slice(0,10),
-          checking: Number(r.Checking) || 0,
-          savings: Number(r.Savings) || 0,
-          investments: Number(r.Investments) || 0,
-          ccDebt: Number(r['CC Debt']) || 0,
-          otherDebt: Number(r['Other Debt']) || 0,
-          notes: r.Notes || ''
-        });
-      });
-    }
-    if (sheets.includes('Debt Plans')){
-      const dpl = XLSX.utils.sheet_to_json(wb.Sheets['Debt Plans']);
-      dpl.forEach(r => {
-        if (!r.Account) return;
-        seed.debtPlans.push({
-          account: r.Account,
-          originalBalance: Number(r.Original) || 0,
-          apr: r.APR === '' || r.APR == null ? null : Number(r.APR),
-          minPayment: Number(r['Min Payment']) || 0,
-          promoEndDate: r['Promo Ends'] ? String(r['Promo Ends']).slice(0,10) : null,
-          targetPayoffDate: r['Target Payoff'] ? String(r['Target Payoff']).slice(0,10) : null,
-          notes: r.Notes || ''
-        });
-      });
-    }
-    // NEW(v2.0): Goals sheet round-trips too.
-    if (sheets.includes('Goals')){
-      const gl = XLSX.utils.sheet_to_json(wb.Sheets['Goals']);
-      gl.forEach(r => {
-        if (!r.Name) return;
-        seed.goals.push({
-          name: r.Name,
-          target: Number(r.Target) || 0,
-          account: r.Account || null,
-          saved: Number(r.Saved) || 0,
-          targetDate: r['Target Date'] ? String(r['Target Date']).slice(0,10) : null,
-          archived: r.Archived === 'Yes'
-        });
-      });
-    }
-    for (const [k, defaults] of Object.entries(DEFAULT_CATEGORIES)){
-      if (!seed.categories[k] || seed.categories[k].length === 0){
-        seed.categories[k] = [...defaults];
-      }
-    }
-  } else {
-    if (sheets.includes('Account Registry')){
-      const ws = wb.Sheets['Account Registry'];
-      const rows = XLSX.utils.sheet_to_json(ws, { header:1 });
-      for (let i = 3; i < rows.length; i++){
-        const r = rows[i]; if (!r[0]) continue;
-        seed.accounts.push({ name:r[0], type:r[1], active:(r[3]||'').toLowerCase()==='yes', notes:r[4]||'' });
-      }
-    }
-    if (sheets.includes('Transactions')){
-      const ws = wb.Sheets['Transactions'];
-      const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'yyyy-mm-dd' });
-      for (let i = 3; i < rows.length; i++){
-        const r = rows[i]; if (!r[0]) continue;
-        seed.transactions.push({
-          date: typeof r[0] === 'string' ? r[0].slice(0,10) : toLocalISO(new Date(r[0])),
-          type: r[1], account:r[2], category:r[3], description:r[4]||'', amount:Number(r[5]), fromAccount:r[6]||null
-        });
-      }
-    }
+export const backupJSON = busyGuard(async () => {
+  const { json, name } = backupFile();
+  downloadBlob(new Blob([json], { type:'application/json' }), name);
+  await markBackedUp();
+  toast('Backup saved');
+});
+
+// NEW(v3.0): hand the backup to the OS share sheet (Google Drive, email, …).
+export function canShareBackup(){
+  try {
+    return typeof File !== 'undefined' && !!navigator.canShare &&
+      navigator.canShare({ files: [new File(['{}'], 'x.json', { type:'application/json' })] });
+  } catch(e){ return false; }
+}
+const shareBackup = busyGuard(async () => {
+  const { json, name } = backupFile();
+  try {
+    await navigator.share({ files: [new File([json], name, { type:'application/json' })], title: name });
+    await markBackedUp();
+    toast('Backup shared');
+  } catch(e){
+    if (e && e.name === 'AbortError') return;     // user closed the share sheet
+    console.warn('Share failed', e);
+    toast('Sharing failed — saving the file instead');
+    await backupJSON();
   }
-  return seed;
+});
+
+// Validate + atomically replace everything with a backup's contents. A
+// snapshot of the current data is taken first, so this can be undone.
+async function applyBackup(data, reason){
+  if (!data || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)){
+    throw new Error("That doesn't look like a Ledger backup");
+  }
+  await saveSnapshot(reason);
+  const legacy = !Array.isArray(data.balanceAnchors);
+  const cats = data.categories || {};
+  await replaceAllData({
+    accounts: data.accounts,
+    categories: Object.keys(cats).map(k => ({ id:k, list: Array.isArray(cats[k]) ? cats[k] : [] })),
+    budgets: data.budgets,
+    transactions: data.transactions,
+    networth: data.netWorth,
+    debtPlans: data.debtPlans,
+    bills: data.bills,
+    goals: data.goals,                              // absent in v1 backups → empty
+    balanceAnchors: legacy ? [] : data.balanceAnchors,
+    startingBalances: legacy ? data.startingBalances : []
+  });
+  await loadState();
+  // NEW(v2.10.2): backed-up flags ride along, merged over this device's.
+  if (data.flags && typeof data.flags === 'object'){
+    state.flags = { ...state.flags, ...data.flags, id:'flags' };
+  }
+  // Pre-v3 backups carry month-by-month starting balances — convert them
+  // exactly the way a device upgrade does.
+  if (legacy) await migrateLegacyBalances();
+  else { state.flags.anchorsV3 = true; await saveFlags(); }
+  invalidateMerchantCache();
 }
 
-/* ─── Recompute Balances ───────────────────────
-   One-shot repair for stale starting balances. Mostly useful for users
-   upgrading from <= v1.1.0, where transaction edits didn't auto-cascade
-   to subsequent months. Going forward, cascadeForChange() handles this
-   automatically on every txn mutation, so this is rarely needed.
-   ──────────────────────────────────────────────── */
-export async function recomputeAllBalances(){
-  if (!state.transactions.length){
-    toast('No transactions to recompute');
-    return;
-  }
-  if (!confirm(
-    'Recompute every starting balance from your transaction history?\n\n' +
-    'For each account, the earliest month with a transaction stays put — ' +
-    'all later months are recalculated. This is safe; opening balances ' +
-    'set before an account had any activity are preserved.'
-  )) return;
-
-  // For each (account, year), find earliest month containing a txn.
-  const earliest = new Map();
-  for (const t of state.transactions){
-    if (!t.date) continue;
-    const yr = parseInt(t.date.slice(0,4), 10);
-    const mo = parseInt(t.date.slice(5,7), 10);
-    if (!yr || !mo) continue;
-    for (const acct of [t.account, t.fromAccount]){
-      if (!acct) continue;
-      const key = `${acct}|${yr}`;
-      if (!earliest.has(key) || earliest.get(key) > mo) earliest.set(key, mo);
-    }
-  }
-
-  for (const [key, mo] of earliest){
-    const [acct, yrStr] = key.split('|');
-    await cascadeBalances(acct, parseInt(yrStr, 10), mo);
-  }
-  toast(`Recomputed ${earliest.size} account-year(s)`);
-}
-
-/* ─── Backup / Reset ─────────────────────────── */
-export async function backupJSON(){
-  const data = {
-    version:2, // NEW(v2.0): adds goals; older restores ignore unknown keys
-    // NEW(v2.10.2): app flags ride along (Real Available card config, auto-
-    // snapshot toggle, dismissed banners) — restoring on a new device used
-    // to silently lose all of them. Old restores ignore the unknown key.
-    flags: { ...state.flags },
-    accounts: state.accounts,
-    categories: state.categories,
-    budgets: state.budgets,
-    startingBalances: state.startingBalances,
-    transactions: state.transactions,
-    netWorth: state.netWorth,
-    debtPlans: state.debtPlans,
-    bills: state.bills,
-    goals: state.goals
-  };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type:'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `ledger-backup-${today()}.json`; a.click();
-  URL.revokeObjectURL(url);
-  await markBackedUp(); // NEW(v2.9.2)
-  toast('Backup downloaded');
-}
-
-/* ─── Restore from JSON ────────────────────────
-   Counterpart to backupJSON. Reads a backup file produced by this app and
-   replaces ALL current data with its contents. The backup stores each store
-   as an array of records (with their ids), except `categories`, which is an
-   object keyed by type — so that one is rehydrated into per-type records.
-   ──────────────────────────────────────────────── */
-export async function restoreJSON(onRestored){
+export function restoreJSON(onRestored){
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.json,application/json';
+  // No `accept` filter: Android greys out files whose MIME type it can't
+  // map (Drive downloads, uppercase extensions) — validate after reading.
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;
     let data;
-    try {
-      data = JSON.parse(await file.text());
-    } catch {
-      toast('Not a valid JSON file');
-      return;
-    }
-    // Light validation: a real backup has at least these two arrays.
+    try { data = JSON.parse(await file.text()); }
+    catch { toast('Not a valid JSON file'); return; }
     if (!data || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)){
       toast("Doesn't look like a Ledger backup");
       return;
     }
-    if (!confirm('Restore from this backup?\n\nThis REPLACES all current data on this device. Consider downloading a fresh backup first if you\'re unsure.')) return;
-
-    // Defensive: every record needs an id (IndexedDB keyPath). App backups
-    // always include ids, but assign one if a hand-edited file is missing them.
-    const withIds = (arr) => (arr || []).map(r => (r && r.id) ? r : { ...r, id: uid() });
-
+    const when = data.exportedAt ? ` from ${String(data.exportedAt).slice(0, 10)}` : '';
+    if (!confirm(`Restore this backup${when}? (${data.transactions.length.toLocaleString()} transactions)\n\nIt REPLACES all current data on this device. A snapshot of the current data is kept, so you can roll back from More → Backup & Restore.`)) return;
     try {
-      // FIX(v2.9.1): clear DATA stores only. Restoring a backup used to wipe
-      // meta too — device settings (realAvailCards, auto-snapshot toggle,
-      // dismissed banners) that backups don't even contain, so they were
-      // simply lost. Trash and tombstones survive for the same reason.
-      for (const s of DATA_STORES) await dbClear(s);
-      await dbBulkPut('accounts',         withIds(data.accounts));
-      await dbBulkPut('budgets',          withIds(data.budgets));
-      await dbBulkPut('startingBalances', withIds(data.startingBalances));
-      await dbBulkPut('transactions',     withIds(data.transactions));
-      await dbBulkPut('networth',         withIds(data.netWorth));
-      await dbBulkPut('debtPlans',        withIds(data.debtPlans));
-      await dbBulkPut('bills',            withIds(data.bills));
-      await dbBulkPut('goals',            withIds(data.goals)); // NEW(v2.0): absent in v1 backups → empty
-      // categories: object { Expense:[...], Income:[...], ... } → one record per type
-      const cats = data.categories || {};
-      for (const k of Object.keys(cats)){
-        await dbPut('categories', { id:k, list: Array.isArray(cats[k]) ? cats[k] : [] });
-      }
-      await loadState();
-      // NEW(v2.10.2): merge backed-up flags over this device's (backups from
-      // before v2.10.2 have no flags key — nothing changes for them).
-      if (data.flags && typeof data.flags === 'object'){
-        state.flags = { ...state.flags, ...data.flags, id:'flags' };
-        await saveFlags();
-      }
-      invalidateMerchantCache();
+      await applyBackup(data, 'Before restoring ' + file.name);
       if (typeof onRestored === 'function') onRestored();
       toast('Backup restored');
     } catch (e){
       console.error(e);
-      toast('Restore failed: ' + (e.message || 'unknown error'));
+      toast('Restore failed — nothing was changed. ' + (e.message || ''));
     }
   };
   input.click();
 }
+
+export async function openBackupSheet(onChanged){
+  const snaps = await listSnapshots();
+  const share = canShareBackup();
+  $('#sheetBody').innerHTML = `
+    <h2>Backup &amp; Restore</h2>
+    <div class="muted small" style="margin-bottom:14px;line-height:1.55;">
+      Your ledger lives only on this device. A backup is one JSON file with everything in it — keep a recent one somewhere safe.
+      <b>${esc(backupAgeLabel().replace(/^./, c => c.toUpperCase()))}.</b>
+    </div>
+    ${share ? `<button class="btn" id="bk-share">Share backup… <span class="muted small" style="font-weight:400;">(Drive, email)</span></button>` : ''}
+    <button class="btn ${share ? 'secondary' : ''}" id="bk-save" style="${share ? 'margin-top:10px;' : ''}">Save backup file</button>
+    <button class="btn ghost" id="bk-restore" style="margin-top:10px;">Restore from a backup file…</button>
+
+    <div class="section-label">Automatic snapshots</div>
+    <div class="muted small" style="margin-bottom:8px;line-height:1.5;">Taken on this device right before anything replaces your data. The newest 3 are kept.</div>
+    ${snaps.length ? snaps.map(s => `
+      <div class="rec-row">
+        <div style="min-width:0;flex:1;">
+          <div style="font-size:13.5px;font-weight:500;">${esc(s.reason || 'Snapshot')}</div>
+          <div class="muted small">${esc(new Date(s.createdAt).toLocaleString())} · ${(s.txnCount || 0).toLocaleString()} transactions</div>
+        </div>
+        <button class="btn secondary bk-roll" data-id="${esc(s.id)}" style="width:auto;padding:8px 12px;font-size:12px;flex-shrink:0;">Roll back</button>
+      </div>`).join('') : '<div class="muted small" style="font-style:italic;">None yet.</div>'}
+  `;
+  openSheet();
+  const refresh = () => { if (typeof onChanged === 'function') onChanged(); };
+  $('#bk-share')?.addEventListener('click', async () => { await shareBackup(); openBackupSheet(onChanged); });
+  $('#bk-save').addEventListener('click', async () => { await backupJSON(); openBackupSheet(onChanged); });
+  $('#bk-restore').addEventListener('click', () => restoreJSON(() => { closeSheet(); refresh(); }));
+  $$('.bk-roll').forEach(b => b.addEventListener('click', busyGuard(async () => {
+    const snap = snaps.find(s => s.id === b.dataset.id);
+    if (!snap) return;
+    if (!confirm(`Roll back to "${snap.reason}" (${new Date(snap.createdAt).toLocaleString()})?\n\nYour current data is snapshotted first, so this can be undone too.`)) return;
+    try {
+      await applyBackup(snap.data, 'Before rollback');
+      closeSheet(); refresh();
+      toast('Rolled back');
+    } catch(e){
+      console.error(e);
+      toast('Rollback failed — nothing was changed');
+    }
+  })));
+}
+
 export async function resetData(){
   if (!confirm('Erase ALL data and start fresh? This cannot be undone.')) return;
-  if (!confirm('Really? All transactions, accounts, and settings will be deleted.')) return;
+  if (!confirm('Really? All transactions, accounts, settings, and snapshots will be deleted.')) return;
   for (const s of STORES) await dbClear(s);
   location.reload();
 }
@@ -735,7 +794,7 @@ export function openAboutSheet(){
         <div class="about-stat"><div class="v">${bills}</div><div class="l">Bills</div></div>
       </div>
       <div class="muted small" style="margin-top:14px;line-height:1.55;">
-        Everything stays on this device in IndexedDB. Nothing is sent anywhere. Your data is safe across app updates — use Backup as JSON in More if you want an extra copy.
+        Everything stays on this device in IndexedDB. Nothing is sent anywhere. Your data is safe across app updates — keep a recent backup from More → Backup &amp; Restore.
       </div>
     </div>
 

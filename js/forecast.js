@@ -13,14 +13,24 @@
    Each event is projected forward on its own cadence through the window.
    The line chart shows the projected cash balance day-by-day; below it
    is a chronological list of upcoming events.
+
+   FIX(v3.0): two double counts removed.
+   - Recurring expenses charged to a CREDIT CARD no longer come straight out
+     of cash on their charge date — that money reaches cash through the
+     card's payment (an auto-CC or CC Payment bill), which was subtracted too.
+   - A detected recurring charge that a bill already covers (same category,
+     or the bill's name in the merchant) is skipped. The old de-dup required
+     the same date AND the same cents, which almost never happened, so e.g.
+     rent was subtracted twice every month.
+   Unpaid one-time bills already past due land as today's event.
    ============================================================ */
 
-import { $, fmt, fmtShort, monthName, parseLocalDate, toLocalISO, addDays, sumMoney, round2, esc } from './util.js';
+import { $, fmt, fmtShort, monthName, parseLocalDate, toLocalISO, addDays, sumMoney, esc, squash, round2 } from './util.js';
 import { state } from './db.js';
-import { balanceLatest } from './effects.js';
+import { balanceLatest, acctTypeMap } from './effects.js';
 import { openSheet } from './sheet.js';
 import { detectRecurring } from './subscriptions.js';
-import { getBillAmount, getBillDueDay } from './bills.js';
+import { getBillAmount, isBillPaid } from './bills.js';
 
 // Project the next due date for an auto-cc bill, given today.
 // We assume close+grace ≈ a real-world due date once a month. Find
@@ -88,13 +98,26 @@ function buildEvents(days){
 
   const events = [];
 
+  const aType = acctTypeMap();
+  const isCashAcct = (n) => aType[n] === 'Checking' || aType[n] === 'Savings';
+  const active = state.bills.filter(b => b.active !== false);
+  // Cards/loans whose payments are modeled by a bill: their charges reach
+  // cash through that payment, never directly.
+  const paidViaBill = new Set([
+    ...active.filter(b => b.recurrence === 'auto-cc').map(b => b.linkedAccount),
+    ...active.filter(b => b.recurrence !== 'auto-cc' && (b.type === 'CC Payment' || b.type === 'Loan Payment')).map(b => b.account)
+  ]);
+  const expenseBills = active.filter(b => b.recurrence !== 'auto-cc' && (b.type || 'Expense') === 'Expense');
+  const coveredByBill = (r) => expenseBills.some(b =>
+    (b.category && b.category === r.category) || (squash(b.name).length >= 3 && squash(r.label).includes(squash(b.name))));
+
   // Recurring Income (paychecks, Prolific, etc.)
   const incRecurring = detectRecurring('Income');
   for (const r of incRecurring){
     const occs = projectOccurrences(r.last, r.canonDays, todayD, endD);
     for (const d of occs){
       events.push({
-        date:d, kind:'income', label:r.category, amount:r.medAmt,
+        date:d, kind:'income', label:r.label, amount:r.medAmt,
         detail:`${r.cadence} · ${r.category}`
       });
     }
@@ -103,11 +126,13 @@ function buildEvents(days){
   // Recurring Expenses (subscriptions)
   const expRecurring = detectRecurring('Expense');
   for (const r of expRecurring){
+    if (coveredByBill(r)) continue;
+    if (paidViaBill.has(r.primaryAccount)) continue;
     const occs = projectOccurrences(r.last, r.canonDays, todayD, endD);
     for (const d of occs){
       events.push({
-        date:d, kind:'subscription', label:r.category, amount:-r.medAmt,
-        detail:`${r.cadence} · ${r.category}`
+        date:d, kind:'subscription', label:r.label, amount:-r.medAmt,
+        detail:`${r.cadence} · ${r.category}${r.primaryAccount && !isCashAcct(r.primaryAccount) ? ' · ' + r.primaryAccount : ''}`
       });
     }
   }
@@ -116,15 +141,14 @@ function buildEvents(days){
   // one-time bills land on their dueDate (single occurrence), auto-cc
   // bills get a single occurrence at the next statement-due date with
   // the current live balance (we can't predict future charges).
-  for (const b of state.bills){
-    if (b.active === false) continue;
+  for (const b of active){
     if (b.recurrence === 'auto-cc'){
       const liveAmt = getBillAmount(b);
       if (liveAmt <= 0) continue;
       const due = projectAutoCcDueDate(b.closeDay || 1, b.graceDays != null ? b.graceDays : 21, todayD, endD);
       if (!due) continue;
-      const ymBill = `${due.getFullYear()}-${String(due.getMonth()+1).padStart(2,'0')}`;
-      if (b.paidMonths && b.paidMonths[ymBill]) continue;
+      const ymBill = toLocalISO(due).slice(0, 7);
+      if (isBillPaid(b, ymBill)) continue;
       events.push({
         date:due, kind:'bill', label:b.name, amount:-liveAmt,
         detail:`Auto · ${b.linkedAccount}`
@@ -132,38 +156,31 @@ function buildEvents(days){
       continue;
     }
     if (!b.amount) continue;
+    // An expense bill charged to a card whose payment is itself a bill
+    // reaches cash through that payment.
+    if ((b.type || 'Expense') === 'Expense' && paidViaBill.has(b.account)) continue;
     let dates = [];
     if (b.recurrence === 'once'){
-      if (!b.dueDate) continue;
+      if (!b.dueDate || isBillPaid(b, b.dueDate.slice(0, 7))) continue;
       const d = parseLocalDate(b.dueDate);
-      if (d >= todayD && d <= endD) dates = [d];
+      if (d < todayD) dates = [new Date(todayD)];        // NEW(v3.0): overdue → due now
+      else if (d <= endD) dates = [d];
     } else {
       if (!b.dueDay) continue;
       dates = projectBillDates(b.dueDay, todayD, endD);
     }
     for (const d of dates){
-      const ymBill = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       // Skip bills already marked paid for the month they fall in
-      if (b.paidMonths && b.paidMonths[ymBill]) continue;
+      if (b.recurrence !== 'once' && isBillPaid(b, toLocalISO(d).slice(0, 7))) continue;
       events.push({
         date:d, kind:'bill', label:b.name, amount:-b.amount,
-        detail: b.recurrence === 'once' ? `One-time bill` : `Bill · due ${b.dueDay}`
+        detail: b.recurrence === 'once' ? (parseLocalDate(b.dueDate) < todayD ? 'One-time bill · overdue' : 'One-time bill') : `Bill · due ${b.dueDay}`
       });
     }
   }
 
-  // De-dup: if a bill matches a detected recurring expense by name/amount
-  // on the same day, the detected one is likely redundant (the bill will
-  // be logged and become the real transaction).
-  const dedupKey = (e) => `${toLocalISO(e.date)}|${Math.round(e.amount*100)}`;
-  const billKeys = new Set(events.filter(e => e.kind === 'bill').map(dedupKey));
-  const filtered = events.filter(e => {
-    if (e.kind === 'subscription' && billKeys.has(dedupKey(e))) return false;
-    return true;
-  });
-
-  filtered.sort((a, b) => a.date - b.date);
-  return filtered;
+  events.sort((a, b) => a.date - b.date);
+  return events;
 }
 
 // Produce a daily cash-balance series for the chart
@@ -317,7 +334,7 @@ export function openForecastSheet(){
     `}
 
     <div class="muted small" style="margin-top:14px;text-align:center;line-height:1.55;">
-      Forecast quality improves with more transaction history. One-off purchases aren't projected.
+      Forecast quality improves with more transaction history. One-off purchases aren't projected, and charges on a card whose payment is a bill reach cash through that bill.
     </div>
   `;
   openSheet();

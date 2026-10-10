@@ -1,8 +1,74 @@
-# Ledger PWA · v2.9.3
+# Ledger PWA · v3.0.0
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
-**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).**
+**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (17 suites, 363 checks, synthetic data).
+
+## What's new in v3.0.0
+
+The upgrade is automatic and keeps every number you see: on first launch the stored month-by-month balances are converted (see *Balances*), verified against a real year-plus ledger — every stored account-month reproduced to the cent. Database v4 → v5 (two additive stores). **Take a JSON backup before updating**, as always.
+
+### Balances are calculated, not stored
+- Up to 2.10 every account kept twelve stored month-start balances per year, re-synced by a "cascade" after every edit — the source of the v1.1.1, v1.1.4, v2.9.1 and v2.10.2 balance bugs. Now a balance is **the account's pinned opening + every transaction since**, computed on the fly. Nothing can go stale, year boundaries carry over by construction, and there's no "Recompute Balances" any more.
+- **More → Balances & Openings**: type a month's starting balance to *pin* it (an account's opening, or a match to your bank); unpin to let it follow transactions again.
+- Fixed in passing: a loan with a mid-year opening read as a *negative* balance in Forecast, auto net-worth snapshots and the payoff strategy, which ignored the opening.
+
+### Accounts you no longer have
+- **Close** an account (Accounts → Edit → Close account…): history stays in reports and search; it leaves pickers, Home and Real Available. If its history doesn't end at $0 — tracking started after it already had money in it — one tap sets the opening balance that makes it end at exactly $0. Reopen any time.
+- **Delete** now only deletes unused accounts. An in-use account offers *Close instead* or *Move everything to another account* (merge). Deleting used to silently drop the account's transactions from every balance.
+- **Missing accounts**: names your transactions still reference but no account has (an account deleted in an older version) are listed under Accounts → Missing, with **Recover** (type guessed from its transactions) → closed account, history counting again.
+
+### Reconcile, rebuilt for raw bank statements (Citi)
+- Statement descriptions are cleaned to merchant names — masked card numbers, `SQ *`/`PY *` prefixes, store numbers, city + state removed.
+- **Rows that matched teach the rest**: if statement `BURGER BARN #01234 … TX` matched your `Burger Barn · Restaurants`, the unmatched Burger Barn rows are added exactly that way. What it learns is kept for next month. Unknown merchants fall back to merchant memory, then the card's usual category — never a blanket "Misc".
+- Payment rows ("ONLINE PAYMENT, THANK YOU") are recognized without a Type column and add as **CC Payment from your usual pay-from account** (they used to add as a Refund). Checking-account statements: deposits add as Income.
+- Each unmatched row **previews** what it will be added as; *Add all as shown*.
+- The file picker no longer filters by type — Android greyed out Citi's uppercase `.CSV` downloads.
+- Built-in CSV parser (quotes, `""` escapes, BOM, `;`/tab delimiters).
+
+### Faster, smarter logging
+- **Default account per category** — pick Restaurants and the form switches to your dining card. Set it in More → Categories (`→ account`), or just pick the card once and tap **Always** on the prompt. Without a rule, a clear recent habit is used. A manual pick is never overridden.
+- **Bills you log by hand**: saving a transaction that matches an unpaid bill offers *Mark paid*; the Bills tab shows *Looks paid · Link* for any it finds. (An unlinked bill kept counting against Real Available — the same money twice.)
+- Refunds have an optional **Gives back to budget** category (auto from the merchant: "Refund: Amazon" → Shopping) and now **reduce that budget's spending**.
+
+### Backup & Restore (JSON only)
+- Excel import/export removed (and its 950 KB library) — JSON is the one format. Backups are format v3; v1/v2 backups still restore and are converted.
+- **Share backup…** sends it straight to Drive / email (Android share sheet); **Save backup file** downloads it.
+- **Restore is all-or-nothing**: a broken or partial file changes nothing (it used to wipe the ledger, then fail halfway).
+- Every restore first takes an automatic **snapshot**; the newest three are listed with **Roll back**.
+
+### Fixes
+- **Month-End Pace** counted card and loan payment bills as *spending* — the projection ran high until you paid them, then dropped. Only expense bills count now; recurring spend is split out per transaction.
+- **Cashflow Forecast** double-counted: subscriptions charged to a card came out of cash *and* again via the card's payment bill; a bill that was also detected as a recurring charge (rent) came out twice.
+- **Unpaid one-time bills** vanished when their month ended; they now carry forward as overdue until paid.
+- **Overdrawn accounts** showed as positive on Home (the minus sign was stripped); card credits showed as owed.
+- **Double taps** on Save, Pay, delete, restore, goal/snapshot save no longer create duplicates.
+- A **cleared date** could save a transaction that then vanished from every view.
+- Home's Upcoming Bills check circle opened the editor instead of paying.
+- 0% APR plans were saved as "no APR" and dropped from the payoff strategy.
+- Deleting a bill payment then tapping Undo re-links the bill.
+- Insight de-duplication compared categories by substring.
+- Remaining unescaped user text in HTML templates (deferred item #1) escaped.
+
+### Under the hood
+- **Recurring detection by merchant** first, category second — two subscriptions logged under one category are each detected. Series carry their transaction ids (used by Pace).
+- Merchant memory weights recent entries (re-filing a merchant takes effect quickly).
+- Service worker installs with `cache: 'reload'` (GitHub Pages' 10-minute HTTP cache could put the previous release's files into the new version's cache). Fonts are self-hosted and precached — fully offline, no third-party requests.
+- IndexedDB writes that abort (quota) now fail loudly instead of hanging.
+- GitHub Actions: tests run on every push and gate the Pages deploy (see DEPLOY.md).
+- New suites: `balances`, `accounts`, `addform`, `backup`, `citi`, `money3`.
+
+---
+
+# Ledger PWA · v2.10.x (previous)
+
+- **2.10.2** — account renames follow through to the Real Available card config; year-boundary carryover for dormant accounts; dateless transactions can't crash Home/Activity/Insights; paying an auto-CC bill in a past month uses that month's balance; backups carry app flags.
+- **2.10.1** — paused bills render in a Paused section so they can be reactivated; nested duplicate copy removed.
+- **2.10.0** — Activity search matches the source account too (CC payments, transfers).
+
+---
+
+# Ledger PWA · v2.9.3 (previous)
 
 ## What's new in v2.9.3 — Add Budget hotfix
 

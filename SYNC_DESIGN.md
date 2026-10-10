@@ -1,8 +1,17 @@
-# Sync Design Notes — for v3.0
+# Sync Design Notes — for a future release
 
 Decisions and groundwork captured during v2.3, so the sync release is purely
 transport work. Scope: **single user, two devices** (Fold 6 + PC), offline-first,
 IndexedDB stays the source of truth on each device.
+
+> **v3.0 update:** "v3.0" ended up being a different release (derived
+> balances, account lifecycle, reconcile). Sync is still unscheduled. Two
+> things v3.0 changed below: the startingBalances problem is **solved** —
+> balances are derived and the only stored balance data is a short list of
+> user-entered `balanceAnchors`, which sync like any other store — and the
+> name-FK "orphan scan" mitigation **shipped** (Accounts → Missing →
+> Recover). New device-local stores: `snapshots` (pre-restore copies; never
+> synced).
 
 ## What v2.3 already laid down
 
@@ -40,12 +49,13 @@ client `updatedAt` (the user's intent ordering).
 | debtPlans | ✅ | |
 | networth | ✅ | snapshots are append-mostly; trivial |
 | goals | ✅ | |
-| startingBalances | ⚠️ **partial** | see below |
+| balanceAnchors | ✅ | v3.0 — user-entered openings only; replaces startingBalances |
+| startingBalances | ❌ legacy | v3.0 — read-only migration input, never written (see below) |
 | meta (flags/selected) | ❌ device-local | lastAutoNW, dismissed banners, selected month, scrub flag |
 | trash | ❌ device-local | the *transaction* delete already tombstones; trash is a local undo buffer |
 | tombstones | — | not synced as data; consumed by the protocol |
 
-## startingBalances — the derived-data problem
+## startingBalances — the derived-data problem (✅ solved in v3.0 by derived balances; kept for history)
 
 These records mix **user-entered openings** with **cascade-computed carry-overs**
 in the same rows. Syncing computed values invites two devices to fight over

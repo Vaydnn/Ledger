@@ -4,20 +4,28 @@
    so the mobile keyboard doesn't close on every filter update.
    ============================================================ */
 
-import { $, $$, fmt, monthKey, monthName, parseLocalDate, today, toast, toastAction, parseAmount, toCents, esc, haptic } from './util.js';
+import { $, $$, monthKey, monthName, parseLocalDate, today, toastAction, parseAmount, toCents, esc, haptic, busyGuard, toast } from './util.js';
 import { state, dbDel, dbPut } from './db.js';
 import { openSheet, closeSheet } from './sheet.js';
 import { renderCurrent } from './app.js';
 import { startEdit } from './add.js';
 import { invalidateMerchantCache } from './merchants.js';
-import { cascadeForChange } from './balances.js';
 import { trashTxn, restoreTxn } from './trash.js';
 
 // NEW(v2.0): amount + date-range filters. amtExact matches to the cent
 // (the "did I log that $77.18 charge?" case); min/max are inclusive bounds;
 // a date range overrides the month chip while active.
-export const txnFilters = { type:'all', search:'', month:'current',
+// NEW(v3.0): `account` — an exact account filter (account OR source account).
+export const txnFilters = { type:'all', search:'', month:'current', account:null,
   amtExact:null, amtMin:null, amtMax:null, dateFrom:'', dateTo:'' };
+
+// NEW(v3.0): Home's account rows land here — exact match, every type.
+export function filterActivityByAccount(name){
+  txnFilters.account = name;
+  txnFilters.search = '';
+  txnFilters.type = 'all';
+  resetRenderCap();
+}
 
 // NEW(v2.5): render cap. "All months" over years of history built 1,000+
 // DOM rows on every visit — layout cost dwarfs the JS math on mobile. The
@@ -32,6 +40,7 @@ export function renderTxns(){
   v.innerHTML = `
     <input class="input txn-search" id="t-search" type="search" placeholder="Search description, category, account…" value="${esc(txnFilters.search)}" />
     <div class="txn-filters">
+      ${txnFilters.account ? `<button class="chip" data-acct-clear="1" aria-pressed="true">${esc(txnFilters.account)} ×</button>` : ''}
       ${['all','Expense','Income','Refund','Investment','Transfer','CC Payment','Loan Payment','Balance Transfer'].map(t =>
         `<button class="chip" data-type="${t}" aria-pressed="${txnFilters.type===t}">${t==='all'?'All':t}</button>`
       ).join('')}
@@ -54,6 +63,9 @@ export function renderTxns(){
   $$('.chip[data-type]', v).forEach(c => c.addEventListener('click', () => {
     txnFilters.type = c.dataset.type; resetRenderCap(); updateChipStates(); renderTxnResults();
   }));
+  $('.chip[data-acct-clear]', v)?.addEventListener('click', () => {
+    txnFilters.account = null; resetRenderCap(); renderTxns();
+  });
   $('.chip[data-month]', v).addEventListener('click', () => {
     txnFilters.month = txnFilters.month === 'current' ? 'all' : 'current';
     resetRenderCap(); updateChipStates(); renderTxnResults();
@@ -160,6 +172,7 @@ function renderTxnResults(){
   } else if (txnFilters.month === 'current'){
     list = list.filter(t => monthKey(t.date) === ym);
   }
+  if (txnFilters.account) list = list.filter(t => t.account === txnFilters.account || t.fromAccount === txnFilters.account);
   if (txnFilters.type !== 'all') list = list.filter(t => t.type === txnFilters.type);
   // NEW(v2.0): amount filters compare in cents to dodge float equality traps.
   if (txnFilters.amtExact != null){
@@ -226,7 +239,7 @@ export function txnHTML(t){
   // FIX(v1.2): user-entered strings escaped before innerHTML.
   const meta = esc((t.fromAccount ? `${t.fromAccount} → ` : '') + t.account + (t.description ? ' · ' + t.description : ''));
   return `
-    <div class="txn" data-id="${t.id}">
+    <div class="txn" data-id="${esc(t.id)}">
       <div class="txn-icon ${cls}">${sym}</div>
       <div class="txn-body">
         <div class="txn-cat">${esc(t.category || t.type)}</div>
@@ -245,10 +258,10 @@ export function openTxnSheet(id){
     <div class="card" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
         <div style="font-family:'Instrument Serif',serif;font-size:30px;color:${t.type==='Income'||t.type==='Refund'?'var(--green)':t.type==='Expense'?'var(--red)':'var(--text)'};">$${t.amount.toFixed(2)}</div>
-        <div class="muted small">${t.date}</div>
+        <div class="muted small">${esc(t.date)}</div>
       </div>
       <div style="font-size:14px;font-weight:500;">${esc(t.category || t.type)}</div>
-      <div class="muted small" style="margin-top:6px;">${t.type} · ${esc(t.account)}${t.fromAccount ? ' (from '+esc(t.fromAccount)+')' : ''}</div>
+      <div class="muted small" style="margin-top:6px;">${esc(t.type)} · ${esc(t.account)}${t.fromAccount ? ' (from '+esc(t.fromAccount)+')' : ''}</div>
       ${t.description ? `<div style="margin-top:10px;font-size:13.5px;">${esc(t.description)}</div>` : ''}
     </div>
     <button class="btn" id="sh-edit">Edit</button>
@@ -256,38 +269,37 @@ export function openTxnSheet(id){
   `;
   openSheet();
   $('#sh-edit').addEventListener('click', () => { closeSheet(); startEdit(t); });
-  $('#sh-del').addEventListener('click', async () => {
+  $('#sh-del').addEventListener('click', busyGuard(async () => {
     // NEW(v2.0): soft delete — the txn moves to the trash store (30-day
     // retention, restorable from More → Trash) and the toast offers Undo.
-    // FIX(v2.9.2): the confirm() popup on top of that was double safety —
-    // trash + Undo already make this fully reversible, so it's gone.
     await trashTxn(t);
     await dbDel('transactions', t.id);
     state.transactions = state.transactions.filter(x => x.id !== t.id);
-    await cascadeForChange(t, null);
-    // If this transaction was the auto-logged payment for a bill, clear that
-    // bill's "paid" flag for the affected month(s). Otherwise the bill would
-    // keep showing Paid with no backing transaction — which, for standard
-    // bills, also makes "Real available" overstate by the bill's amount.
-    // (Restoring from trash does NOT re-link the bill — it shows unpaid.)
+    // If this was a bill's payment, clear that bill's paid flag — otherwise the
+    // bill shows Paid with nothing behind it and Real Available overstates.
+    // FIX(v3.0): remember the links so Undo puts them back.
+    const unlinked = [];
     for (const bill of state.bills){
       if (!bill.paidMonths) continue;
       let changed = false;
       for (const [ym, txnId] of Object.entries(bill.paidMonths)){
-        if (txnId === t.id){ delete bill.paidMonths[ym]; changed = true; }
+        if (txnId === t.id){ delete bill.paidMonths[ym]; unlinked.push([bill, ym]); changed = true; }
       }
       if (changed) await dbPut('bills', bill);
     }
     invalidateMerchantCache();
     haptic([10,30,10]); /* NEW(v2.2): destructive pattern */
-    // FIX(v2.9.2): renderCurrent, not renderTxns — this sheet can now open
-    // from the Home "Recent" card, and re-rendering the hidden Activity view
-    // would have left Home showing the deleted transaction.
+    // FIX(v2.9.2): renderCurrent — this sheet also opens from Home's Recent card.
     closeSheet(); renderCurrent();
     toastAction('Deleted', 'Undo', async () => {
       await restoreTxn({ ...t, deletedAt: Date.now() });
+      for (const [bill, ym] of unlinked){
+        bill.paidMonths = bill.paidMonths || {};
+        bill.paidMonths[ym] = t.id;
+        await dbPut('bills', bill);
+      }
       renderCurrent();
       toast('Restored');
     });
-  });
+  }));
 }

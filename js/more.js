@@ -11,7 +11,7 @@ import { renderNetWorthChart, openNetWorthSheet } from './networth.js';
 import { openSubscriptionsSheet } from './subscriptions.js';
 import { openBudgetsSheet } from './budgets.js';
 import { openBalancesSheet } from './balances.js';
-import { openAccountsSheet, openCategoriesSheet, openAboutSheet, exportXLSX, importXLSX, backupJSON, restoreJSON, resetData, recomputeAllBalances, backupAgeLabel } from './manage.js';
+import { openAccountsSheet, openCategoriesSheet, openAboutSheet, openBackupSheet, resetData, backupAgeLabel, missingAccounts } from './manage.js';
 import { openBreakdownSheet } from './breakdown.js';
 import { openYearViewSheet } from './yearview.js';
 import { openForecastSheet } from './forecast.js';
@@ -21,6 +21,7 @@ import { openTrashSheet } from './trash.js';         // NEW(v2.0)
 
 export function renderMore(){
   const v = $('#view-more');
+  const missing = missingAccounts().length; // NEW(v3.0)
   v.innerHTML = `
     <button class="menu-item" data-act="debts">
       <span class="l"><span class="ico" style="color:var(--amber);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h3"/></svg></span>Debts &amp; Loans</span>
@@ -68,7 +69,7 @@ export function renderMore(){
       <span class="arrow">›</span>
     </button>
     <button class="menu-item" data-act="accounts">
-      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/></svg></span>Accounts</span>
+      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/></svg></span>Accounts${missing ? ` <span class="pill warn">${missing} missing</span>` : ''}</span>
       <span class="arrow">›</span>
     </button>
     <button class="menu-item" data-act="categories">
@@ -76,27 +77,11 @@ export function renderMore(){
       <span class="arrow">›</span>
     </button>
     <button class="menu-item" data-act="balances">
-      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5"/></svg></span>Starting Balances</span>
-      <span class="arrow">›</span>
-    </button>
-    <button class="menu-item" data-act="recompute">
-      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12a9 9 0 0 1 15.5-6.2M21 4v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2M3 20v-5h5"/><path d="M9 12l2 2 4-4"/></svg></span>Recompute Balances</span>
-      <span class="arrow">›</span>
-    </button>
-    <button class="menu-item" data-act="export">
-      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></span>Export to Excel</span>
-      <span class="arrow">›</span>
-    </button>
-    <button class="menu-item" data-act="import">
-      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg></span>Import xlsx</span>
+      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5"/></svg></span>Balances &amp; Openings</span>
       <span class="arrow">›</span>
     </button>
     <button class="menu-item" data-act="backup">
-      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 4v16"/></svg></span>Backup as JSON</span>
-      <span class="arrow">›</span>
-    </button>
-    <button class="menu-item" data-act="restore">
-      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 21V9M7 14l5-5 5 5"/><path d="M4 4h16"/></svg></span>Restore from JSON</span>
+      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 4v16"/></svg></span>Backup &amp; Restore</span>
       <span class="arrow">›</span>
     </button>
     <button class="menu-item" data-act="trash">
@@ -113,7 +98,7 @@ export function renderMore(){
     </button>
 
     <div style="text-align:center;margin-top:24px;color:var(--text-3);font-size:11px;letter-spacing:.1em;text-transform:uppercase;">
-      Ledger v${APP_VERSION} · ${state.transactions.length} txns · ${state.accounts.length} accounts · ${state.bills.length} bills
+      Ledger v${APP_VERSION} · ${state.transactions.length} txns · ${state.accounts.filter(a => a.active).length} accounts · ${state.bills.length} bills
       <br /><span style="letter-spacing:.06em;">${backupAgeLabel()}</span>
     </div>
   `;
@@ -135,11 +120,7 @@ function moreAction(act){
     case 'accounts':    openAccountsSheet(); break;
     case 'categories':  openCategoriesSheet(); break;
     case 'balances':    openBalancesSheet(); break;
-    case 'recompute':   recomputeAllBalances(); break;
-    case 'export':      exportXLSX(); break;
-    case 'import':      importXLSX(renderAll); break;
-    case 'backup':      backupJSON(); break;
-    case 'restore':     restoreJSON(renderAll); break;
+    case 'backup':      openBackupSheet(renderAll); break;    // NEW(v3.0): save / share / restore / roll back
     case 'reset':       resetData(); break;
     case 'about':       openAboutSheet(); break;
   }

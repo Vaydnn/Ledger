@@ -4,8 +4,8 @@ These came out of the v1.2 audit but were intentionally deferred, either because
 
 ---
 
-## 1. Full HTML-escaping sweep of every remaining `innerHTML` site
-**Severity:** Medium · **Why deferred:** >3 files
+## 1. Full HTML-escaping sweep of every remaining `innerHTML` site — ✅ RESOLVED in v3.0.0
+**Severity:** Medium · **Status:** swept every `${…}` carrying a transaction/account/category/bill/goal/date/id field into HTML (insights, home, goals, budgets, debts, bills, trash, txns, networth, reconcile). Toasts and `confirm()` render as plain text and need none.
 
 v1.2 added `esc()` in `util.js` and applied it everywhere user-entered strings flow into the highest-traffic templates (account names, category names, merchant suggestions, picker options, bill/plan names, event labels). However, a handful of lower-traffic render paths still interpolate user strings into `innerHTML` unescaped (e.g. some secondary list rows and detail cards across `home.js`, `txns.js`, `breakdown.js`, `insights.js`, `manage.js`).
 
@@ -24,7 +24,7 @@ A 7×~53 calendar grid at 375px width yields ~11px cells; there is no way to hit
 **Severity:** Low · **Status:** `DEFAULT_CATEGORIES` genericized (privacy: the old lists were real personal categories in a public repo) and `seed.json` replaced with synthetic demo data that matches.
 
 ## 4. Category delete orphans existing transaction labels — ✅ RESOLVED in v2.0.0
-**Severity:** Medium · **Status:** implemented as delete-with-reassignment (transactions move, budgets merge month-by-month). Account delete still orphans by name, as before.
+**Severity:** Medium · **Status:** implemented as delete-with-reassignment (transactions move, budgets merge month-by-month). Account delete: ✅ v3.0.0 — in-use accounts can only be closed or merged, and previously-orphaned names can be recovered (Accounts → Missing).
 
 Deleting a category in Manage leaves historical transactions pointing at the now-nonexistent label. They still render (the label is stored on the txn), but breakdown/budget grouping treats them as their own orphan bucket. Account delete behaves the same way and already warns about it; v1.2 added *rename* cascades (which is the common case), but delete-with-reassignment is a bigger UX flow.
 

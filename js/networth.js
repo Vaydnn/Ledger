@@ -2,7 +2,7 @@
    networth.js — net worth chart + snapshot editor.
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, today, uid, toast, toCents, fromCents, parseAmount } from './util.js';
+import { $, $$, fmt, fmtShort, today, uid, toast, toCents, fromCents, parseAmount, busyGuard, esc } from './util.js';
 import { state, dbPut, saveFlags } from './db.js';
 import { balanceAt, balanceLatest } from './effects.js';
 import { openSheet, closeSheet } from './sheet.js';
@@ -69,7 +69,7 @@ export function renderNetWorthChart(){
       ${fmt(latest)}
     </div>
     <div class="muted small" style="margin-top:4px;">
-      ${change >= 0 ? '+' : '−'}${fmt(Math.abs(change))} since ${data[0].date}
+      ${change >= 0 ? '+' : '−'}${fmt(Math.abs(change))} since ${esc(data[0].date)}
     </div>
     <svg class="nw-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
       <defs>
@@ -141,9 +141,10 @@ export function openNetWorthSheet(onSaved){
     await saveFlags();
     $$('.seg-btn', $('#nw-auto')).forEach(x => x.classList.toggle('active', x === btn));
   }));
-  $('#nw-save').addEventListener('click', async () => {
+  $('#nw-save').addEventListener('click', busyGuard(async () => {
     // FIX(v2.9.1): parseAmount, not parseFloat ('1,234.56' → 1 silently).
     const num = (s) => { const n = parseAmount($(s).value); return isNaN(n) ? 0 : n; };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test($('#nw-date').value)){ toast('Pick a date'); return; } // FIX(v3.0)
     const snap = {
       id: uid(),
       date: $('#nw-date').value,
@@ -156,9 +157,9 @@ export function openNetWorthSheet(onSaved){
     };
     await dbPut('networth', snap);
     state.netWorth.push(snap);
-    state.netWorth.sort((a,b) => a.date.localeCompare(b.date));
+    state.netWorth.sort((a,b) => (a.date||'').localeCompare(b.date||''));
     closeSheet();
     if (typeof onSaved === 'function') onSaved();
     toast('Snapshot saved');
-  });
+  }));
 }

@@ -1,192 +1,134 @@
 /* ============================================================
-   balances.js — Starting Balances editor sheet + cascade helpers.
+   balances.js — Balances sheet (pinned openings) + the v3.0 migration.
 
-   BUG FIX vs v1.0.5: the account picker inside this sheet used to
-   close the sheet on selection (because openPicker auto-closed) and
-   the caller never re-opened it. Now openPicker leaves the sheet
-   open and we re-render content in place — which is what was intended.
+   NEW(v3.0): there is no cascade any more. Balances are derived on the fly
+   (effects.js) from transactions plus a few ANCHORS — "account X started
+   month M with $Y". Typing a month's starting balance here pins it; every
+   later month follows from it automatically, and editing any transaction
+   anywhere is reflected immediately with nothing to keep in sync.
 
-   BUG FIX vs v1.1.0: stored starting balances would go stale when
-   transactions were added/edited/deleted, because the cascade only
-   ran when the user manually edited a row in this sheet. Symptom:
-   end-of-month balance shown for May = (stale May start) + (May txns),
-   which could differ from the actual end of April balance — i.e. the
-   carry-over broke. Fix: cascadeForChange() now runs after every
-   transaction mutation (see add.js, txns.js, bills.js, home.js).
-   cascadeBalances() is also exported so manage.js can offer a one-shot
-   "Recompute Balances" action for fixing pre-1.1.1 data.
+   History of the problem this replaces: stored month-by-month balances
+   needed a cascade after every add/edit/delete, and that cascade was the
+   source of the v1.1.1 (stale months), v1.1.4 (no Dec→Jan carry), v2.9.1
+   (new year opened at $0) and v2.10.2 (dormant accounts at $0) bugs.
    ============================================================ */
 
-import { $, $$, fmt, monthAbbr, monthName, uid, toast, round2, parseAmount, esc } from './util.js';
-import { state, dbPut } from './db.js';
-import { monthNetForAccount } from './effects.js';
+import { $, $$, fmt, monthAbbr, monthName, uid, toast, toastAction, round2, parseAmount, esc, ymOf, busyGuard } from './util.js';
+import { state, dbPut, dbDel, dbClear, dbBulkPut, saveFlags } from './db.js';
+import { monthNetForAccount, getStartingBalance, anchorAt, anchorsFromLegacy } from './effects.js';
 import { openSheet, openPicker } from './sheet.js';
 
 const balancesState = { accountName: null };
 
-export function openBalancesSheet(){
-  const yr = state.selected.year;
-  const activeAccounts = state.accounts.filter(a => a.active);
-  if (activeAccounts.length === 0){
-    $('#sheetBody').innerHTML = `<h2>Starting Balances · ${yr}</h2><div class="muted small">No active accounts yet. Add one in More → Accounts.</div>`;
+/* ── Migration: legacy startingBalances → anchors ──────────────────── */
+// Runs once per device on upgrade (app.js), and again whenever a pre-v3
+// backup is restored (manage.js). Returns the number of anchors created.
+export async function migrateLegacyBalances(rows = state.startingBalances){
+  const anchors = anchorsFromLegacy(rows).map(a => ({ id: uid(), ...a }));
+  await dbClear('balanceAnchors');
+  if (anchors.length) await dbBulkPut('balanceAnchors', anchors);
+  state.balanceAnchors = anchors;
+  state.flags.anchorsV3 = true;
+  await saveFlags();
+  if (anchors.length) console.info(`[Ledger] v3.0 migration: ${anchors.length} pinned opening balance(s)`, anchors);
+  return anchors.length;
+}
+
+export async function ensureAnchorsMigrated(){
+  if (state.flags.anchorsV3) return 0;
+  if (state.balanceAnchors.length || !state.startingBalances.length){
+    state.flags.anchorsV3 = true;
+    await saveFlags();
+    return 0;
+  }
+  return migrateLegacyBalances();
+}
+
+/* ── Anchor CRUD ───────────────────────────────────────────────────── */
+export async function setAnchor(account, month, amount){
+  let a = state.balanceAnchors.find(x => x.account === account && x.month === month);
+  if (a) a.amount = round2(amount);
+  else {
+    a = { id: uid(), account, month, amount: round2(amount) };
+    state.balanceAnchors.push(a);
+  }
+  await dbPut('balanceAnchors', a);
+  return a;
+}
+export async function clearAnchor(account, month){
+  const a = state.balanceAnchors.find(x => x.account === account && x.month === month);
+  if (!a) return null;
+  await dbDel('balanceAnchors', a.id);
+  state.balanceAnchors = state.balanceAnchors.filter(x => x.id !== a.id);
+  return a;
+}
+
+/* ── Sheet ─────────────────────────────────────────────────────────── */
+export function openBalancesSheet(account){
+  const accounts = sheetAccounts();
+  if (accounts.length === 0){
+    $('#sheetBody').innerHTML = `<h2>Balances · ${state.selected.year}</h2><div class="muted small">No accounts yet. Add one in More → Accounts.</div>`;
     openSheet();
     return;
   }
-  if (!balancesState.accountName || !activeAccounts.find(a => a.name === balancesState.accountName)){
-    balancesState.accountName = activeAccounts[0].name;
+  if (account) balancesState.accountName = account;
+  if (!balancesState.accountName || !accounts.find(a => a.name === balancesState.accountName)){
+    balancesState.accountName = accounts[0].name;
   }
   renderBalancesSheet();
   openSheet();
 }
 
-function ensureBalRecord(accountName, year){
-  let rec = state.startingBalances.find(b => b.account === accountName && b.year === year);
-  if (!rec){
-    rec = { id:uid(), account:accountName, year };
-    monthAbbr.forEach(m => rec[m] = 0);
-    // FIX(v2.9.1): year-boundary carryover on CREATION. The December→January
-    // propagation below only fires when a prior-year cascade runs and the
-    // next year's record already exists — so the first transaction of a new
-    // year created this record with jan = 0, silently dropping every
-    // account's carried balance until something happened to re-cascade the
-    // old year. Seed January from the prior year's computed December ending.
-    const prev = state.startingBalances.find(b => b.account === accountName && b.year === year - 1);
-    if (prev){
-      const decEnd = round2((prev[monthAbbr[11]] || 0) + monthNetForAccount(accountName, year - 1, 12));
-      rec.jan = decEnd;
-    }
-    state.startingBalances.push(rec);
-    dbPut('startingBalances', rec);
-  }
-  return rec;
-}
-
-async function cascadeBalances(accountName, year, fromMonthIdx){
-  // A brand-new record needs the whole year filled from its (possibly
-  // carried-over) January opening — cascading only from the transaction's
-  // month would leave the months in between stuck at 0.
-  const existed = state.startingBalances.some(b => b.account === accountName && b.year === year);
-  const rec = ensureBalRecord(accountName, year);
-  if (!existed) fromMonthIdx = 1;
-  for (let m = fromMonthIdx; m < 12; m++){
-    const thisStart = rec[monthAbbr[m-1]] || 0;
-    const net = monthNetForAccount(accountName, year, m);
-    rec[monthAbbr[m]] = Math.round((thisStart + net) * 100) / 100;
-  }
-  await dbPut('startingBalances', rec);
-
-  // Cross-year carryover: December's ENDING balance becomes next January's
-  // OPENING balance. Previously this never happened — the loop above stops
-  // at December within the same year — so editing a December transaction
-  // left the following January's starting balance stale.
-  //
-  // We only propagate when a starting-balance record for (account, year+1)
-  // already exists. That keeps the mid-year-opening rule intact: a brand-new
-  // account whose next year hasn't been touched won't get a fabricated record,
-  // and a manually-set opening for a year with no prior-year activity is never
-  // clobbered (we'd never be cascading the prior year in the first place).
-  const decStart = rec[monthAbbr[11]] || 0;
-  const decNet = monthNetForAccount(accountName, year, 12);
-  const decEnd = Math.round((decStart + decNet) * 100) / 100;
-  const nextRec = state.startingBalances.find(b => b.account === accountName && b.year === year + 1);
-  if (nextRec && (nextRec.jan || 0) !== decEnd){
-    nextRec.jan = decEnd;
-    // Recurse from January of the next year. Terminates: years strictly
-    // increase, records are finite, and we only recurse when jan changed.
-    await cascadeBalances(accountName, year + 1, 1);
-  }
-}
-
-// Exported wrapper so manage.js can do a one-shot "Recompute Balances"
-// over every account-year pair without needing access to ensureBalRecord.
-export { cascadeBalances };
-
-// FIX(v2.10.2): year-boundary carryover for DORMANT accounts. The creation-
-// time carryover above only fires when a cascade touches that account — so
-// an account with no transactions yet in the new year (a quiet Savings
-// account) had no current-year record and read as $0 everywhere until
-// something happened to touch it. Called once per app start (app.js): for
-// every active account that has a prior-year record but no current-year
-// one, run the cascade, which creates the record with January seeded from
-// the prior December's computed ending balance.
-export async function ensureYearCarryover(){
-  const yr = new Date().getFullYear();
-  for (const a of state.accounts.filter(a => a.active)){
-    const has = state.startingBalances.some(b => b.account === a.name && b.year === yr);
-    const prev = state.startingBalances.some(b => b.account === a.name && b.year === yr - 1);
-    if (!has && prev) await cascadeBalances(a.name, yr, 1);
-  }
-}
-
-// Called after any transaction mutation (add / edit / delete). Figures
-// out which (account, year) pairs are affected by the change, then for
-// each one cascades from the earliest affected month forward.
-//
-// Pass `oldTxn = null` for a fresh add, or `newTxn = null` for a delete.
-// On an edit, pass both — we cascade across the union so date / account
-// changes are handled correctly (e.g. moving a txn from March to July
-// must refresh both March-onward AND July-onward).
-//
-// Cascading from earliest-affected-month (rather than January) preserves
-// any manually-set opening balances for accounts that started mid-year
-// — see the Affirm-loan tip in renderBalancesSheet.
-export async function cascadeForChange(oldTxn, newTxn){
-  const earliest = new Map();   // key: `${account}|${year}` → earliest month
-  const consider = (t) => {
-    if (!t || !t.date) return;
-    const yr = parseInt(t.date.slice(0,4), 10);
-    const mo = parseInt(t.date.slice(5,7), 10);
-    if (!yr || !mo) return;
-    for (const acct of [t.account, t.fromAccount]){
-      if (!acct) continue;
-      const key = `${acct}|${yr}`;
-      if (!earliest.has(key) || earliest.get(key) > mo) earliest.set(key, mo);
-    }
-  };
-  consider(oldTxn);
-  consider(newTxn);
-  for (const [key, mo] of earliest){
-    const [acct, yrStr] = key.split('|');
-    await cascadeBalances(acct, parseInt(yrStr, 10), mo);
-  }
+// Open accounts first, then closed ones (their history still needs openings).
+function sheetAccounts(){
+  return [...state.accounts.filter(a => a.active), ...state.accounts.filter(a => !a.active)];
 }
 
 function renderBalancesSheet(){
   const yr = state.selected.year;
-  const activeAccounts = state.accounts.filter(a => a.active);
-  const acct = state.accounts.find(a => a.name === balancesState.accountName);
-  const rec = ensureBalRecord(balancesState.accountName, yr);
+  const accounts = sheetAccounts();
+  const name = balancesState.accountName;
+  const acct = state.accounts.find(a => a.name === name);
   const isDebt = acct && (acct.type === 'Credit Card' || acct.type === 'Loan');
+  const pins = state.balanceAnchors.filter(a => a.account === name).sort((a, b) => a.month.localeCompare(b.month));
 
   const rows = monthAbbr.map((m, i) => {
-    const start = rec[m] || 0;
-    const net = monthNetForAccount(balancesState.accountName, yr, i+1);
-    const end = round2(start + net); // FIX(v1.2): round display sum
-    return { monthIdx: i+1, monthAbbr: m, start, net, end };
+    const ym = ymOf(yr, i + 1);
+    const start = getStartingBalance(name, yr, i + 1);
+    const net = monthNetForAccount(name, yr, i + 1);
+    return { monthIdx: i + 1, ym, start, net, end: round2(start + net), pinned: !!anchorAt(name, ym) };
   });
 
   $('#sheetBody').innerHTML = `
-    <h2>Starting Balances · ${yr}</h2>
+    <h2>Balances · ${yr}</h2>
     <div class="muted small" style="margin-bottom:12px;line-height:1.5;">
-      Edit any month and later months auto-update based on recorded transactions.
-      ${isDebt ? ' For cards/loans, the number is the amount owed.' : ''}
+      Balances are calculated from your transactions. <b>Pin</b> a month's starting balance when an account opens
+      (or to match your bank) by typing it below — every later month follows automatically.
+      ${isDebt ? ' For cards and loans, the number is the amount owed.' : ''}
     </div>
 
     <div class="field">
       <label>Account</label>
       <button class="input picker-btn" id="sb-acct-pick" type="button">
-        <span class="picker-val">${esc(balancesState.accountName)}${acct ? ' · ' + acct.type : ''}</span>
+        <span class="picker-val">${esc(name)}${acct ? ' · ' + esc(acct.type) + (acct.active ? '' : ' · closed') : ''}</span>
         <span class="picker-chev">▾</span>
       </button>
     </div>
 
+    ${pins.length ? `
+      <div class="muted small" style="margin-bottom:10px;line-height:1.5;">
+        Pinned: ${pins.map(p => `${monthName(Number(p.month.slice(5)), true)} ${p.month.slice(0,4)} = ${fmt(p.amount)}`).join(' · ')}
+        ${pins.length > 1 ? '<br>With more than one pin, transactions before a later pin no longer affect the months after it.' : ''}
+      </div>` : ''}
+
     <div class="sb-list">
       ${rows.map(r => `
-        <div class="sb-row">
-          <div class="sb-month">${monthName(r.monthIdx, true)}</div>
+        <div class="sb-row${r.pinned ? ' is-pinned' : ''}">
+          <div class="sb-month">${monthName(r.monthIdx, true)}${r.pinned ? '<div class="sb-pin">📌 pinned</div>' : ''}</div>
           <div class="sb-field">
             <label>Starting</label>
-            <input class="sb-input" data-m="${r.monthAbbr}" data-midx="${r.monthIdx}" type="text" inputmode="decimal" value="${r.start.toFixed(2)}" />
+            <input class="sb-input" data-ym="${r.ym}" data-midx="${r.monthIdx}" type="text" inputmode="decimal" value="${r.start.toFixed(2)}" />
+            ${r.pinned ? `<button type="button" class="sb-unpin" data-ym="${r.ym}">Unpin</button>` : ''}
           </div>
           <div class="sb-calc">
             <div class="sb-calc-row">
@@ -203,35 +145,39 @@ function renderBalancesSheet(){
     </div>
 
     <div class="muted small" style="margin-top:14px;padding:12px 14px;background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);line-height:1.55;">
-      <b style="color:var(--text-2);">Tip:</b> when adding an account mid-year (like an Affirm loan starting in April),
-      set Jan–Mar to 0, then enter the April opening balance. All later months will auto-fill based on payments and charges.
+      <b style="color:var(--text-2);">Tip:</b> for an account that opened mid-year (like a loan starting in April),
+      type its opening balance into April's Starting box. Months before it stay at $0.
     </div>
   `;
 
-  // Account picker — the callback re-renders in the still-open sheet.
-  // With the bug fix, openPicker no longer auto-closes the sheet.
   $('#sb-acct-pick').addEventListener('click', () => {
-    openPicker('Account', activeAccounts.map(a => a.name), balancesState.accountName, (val) => {
+    openPicker('Account', accounts.map(a => a.name), name, (val) => {
       balancesState.accountName = val;
       renderBalancesSheet();
     });
   });
 
-  // Starting-balance cell edits
   $$('.sb-input').forEach(inp => {
-    inp.addEventListener('change', async () => {
-      const m = inp.dataset.m;
-      const mIdx = parseInt(inp.dataset.midx);
-      // FIX(v2.9.1): parseAmount, not parseFloat — parseFloat('1,234.56')
-      // returns 1 and a wrong opening cascades through every later month.
+    inp.addEventListener('change', busyGuard(async () => {
+      const ym = inp.dataset.ym;
+      const mIdx = Number(inp.dataset.midx);
       const val = parseAmount(inp.value);
-      if (isNaN(val)){ inp.value = (rec[m]||0).toFixed(2); return; }
-      rec[m] = val;
-      await dbPut('startingBalances', rec);
-      await cascadeBalances(balancesState.accountName, yr, mIdx);
-      toast('Cascaded from ' + monthName(mIdx, true));
+      const current = getStartingBalance(name, yr, mIdx);
+      if (isNaN(val)){ inp.value = current.toFixed(2); return; }
+      if (Math.abs(val - current) < 0.005 && !anchorAt(name, ym)) return; // unchanged, nothing to pin
+      await setAnchor(name, ym, val);
+      toast(`Pinned ${monthName(mIdx, true)} start at ${fmt(val)}`);
       renderBalancesSheet();
-    });
+    }));
     inp.addEventListener('focus', () => inp.select());
   });
+
+  $$('.sb-unpin').forEach(b => b.addEventListener('click', busyGuard(async () => {
+    const removed = await clearAnchor(name, b.dataset.ym);
+    renderBalancesSheet();
+    if (removed) toastAction('Unpinned — balance now follows transactions', 'Undo', async () => {
+      await setAnchor(removed.account, removed.month, removed.amount);
+      if ($('#sb-acct-pick')) renderBalancesSheet(); // only if the sheet is still showing
+    });
+  })));
 }

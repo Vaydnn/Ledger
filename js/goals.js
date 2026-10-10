@@ -12,7 +12,7 @@
    and a full management sheet from the More menu.
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, clamp, uid, toast, toastAction, parseAmount, parseLocalDate, today, daysBetween, esc, haptic } from './util.js';
+import { $, $$, fmt, fmtShort, clamp, uid, toast, toastAction, parseAmount, today, daysBetween, esc, haptic, busyGuard } from './util.js';
 import { state, dbPut, dbDel } from './db.js';
 import { balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
@@ -45,13 +45,13 @@ function goalRowHTML(g, withActions){
     if (days >= 0){
       const left = target - saved;
       const months = Math.max(1, Math.ceil(days / 30.44));
-      dateLine = `<span> · ${fmt(left / months).replace('−','')} /mo to hit ${g.targetDate}</span>`;
+      dateLine = `<span> · ${fmt(left / months).replace('−','')} /mo to hit ${esc(g.targetDate)}</span>`;
     } else {
       dateLine = `<span> · target date passed</span>`;
     }
   }
   return `
-    <div class="goal-row" data-goal="${g.id}">
+    <div class="goal-row" data-goal="${esc(g.id)}">
       <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
         <div style="font-size:13.5px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${done ? '✓ ' : ''}${esc(g.name)}</div>
         <div class="mono" style="font-size:12.5px;color:${done ? 'var(--green)' : 'var(--text-2)'};flex-shrink:0;">${fmtShort(saved)} / ${fmtShort(target)}</div>
@@ -62,8 +62,8 @@ function goalRowHTML(g, withActions){
       </div>
       ${withActions ? `
         <div style="display:flex;gap:6px;margin-top:8px;">
-          ${!g.account && !done ? `<button class="btn secondary g-quick" data-id="${g.id}" style="flex:1;padding:8px;font-size:12px;">+ Add to goal</button>` : ''}
-          <button class="btn ghost g-edit" data-id="${g.id}" style="width:auto;padding:8px 14px;font-size:12px;">Edit</button>
+          ${!g.account && !done ? `<button class="btn secondary g-quick" data-id="${esc(g.id)}" style="flex:1;padding:8px;font-size:12px;">+ Add to goal</button>` : ''}
+          <button class="btn ghost g-edit" data-id="${esc(g.id)}" style="width:auto;padding:8px 14px;font-size:12px;">Edit</button>
         </div>
       ` : ''}
     </div>
@@ -144,7 +144,7 @@ function openGoalEditor(id, onChanged){
       ` : `
         <div class="field"><label>Saved so far ($)</label><input class="input" id="ge-saved" type="text" inputmode="decimal" value="${esc(f.saved)}" placeholder="0" /></div>
       `}
-      <div class="field"><label>Target Date <span class="muted small">(optional — shows a monthly pace)</span></label><input class="input" id="ge-date" type="date" value="${f.targetDate}" /></div>
+      <div class="field"><label>Target Date <span class="muted small">(optional — shows a monthly pace)</span></label><input class="input" id="ge-date" type="date" value="${esc(f.targetDate)}" /></div>
       ${existing ? `
         <div class="field">
           <label>Archived?</label>
@@ -182,7 +182,7 @@ function openGoalEditor(id, onChanged){
       });
     });
 
-    $('#ge-save').addEventListener('click', async () => {
+    $('#ge-save').addEventListener('click', busyGuard(async () => {
       const name = f.name.trim();
       if (!name){ toast('Name required'); return; }
       const target = parseAmount(f.target);
@@ -206,7 +206,7 @@ function openGoalEditor(id, onChanged){
       toast('Goal saved');
       if (typeof onChanged === 'function') onChanged();
       openGoalsSheet(onChanged);
-    });
+    }));
     $('#ge-del')?.addEventListener('click', async () => {
       // FIX(v2.9.2): immediate delete + Undo toast instead of confirm().
       const removed = { ...existing };

@@ -5,11 +5,37 @@
    new-budget Category picker) now correctly leave the sheet open.
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthAbbr, monthName, alphaSort, clamp, toast, uid, toCents, fromCents, parseAmount, esc } from './util.js';
+import { $, $$, monthAbbr, monthName, alphaSort, clamp, toast, uid, toCents, fromCents, parseAmount, esc, ymOf } from './util.js';
 import { state, dbPut, dbDel } from './db.js';
 import { openSheet, openPicker } from './sheet.js';
+import { refundBudgetCategory } from './merchants.js';
 
 const budgetsState = { budgetId: null };
+
+/* NEW(v3.0): the one definition of "spent against a budget" — shared by the
+   Home card, this sheet, and the budget-breach insight. Expense / Income /
+   Investment totals per category, with REFUNDS netted back into the expense
+   category they refunded (explicit offsetCategory on the refund, else the
+   merchant's usual expense category — "Refund: Amazon" → Shopping). A
+   category can't go below $0 from refunds. Returns {'Type|Category': $}. */
+export function budgetSpentMap(year, monthIdx){
+  const ym = ymOf(year, monthIdx);
+  const c = {};
+  for (const t of state.transactions){
+    if (!t.date || t.date.slice(0, 7) !== ym) continue;
+    if (t.type === 'Refund'){
+      const cat = refundBudgetCategory(t);
+      if (cat) c[`Expense|${cat}`] = (c[`Expense|${cat}`] || 0) - toCents(t.amount);
+      continue;
+    }
+    if (!['Expense','Income','Investment'].includes(t.type)) continue;
+    const k = `${t.type}|${t.category}`;
+    c[k] = (c[k] || 0) + toCents(t.amount);
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(c)) out[k] = fromCents(Math.max(0, v));
+  return out;
+}
 
 // FIX(v2.9.3): the new-budget form's state lives here, not in the DOM.
 // The Type/Category pickers replace #sheetBody while open, so the old
@@ -39,16 +65,11 @@ function renderBudgetsSheet(){
   const yearBudgets = state.budgets.filter(b => b.year === yr).slice().sort((a,b) => alphaSort(a.category, b.category));
   const current = yearBudgets.find(b => b.id === budgetsState.budgetId);
 
-  // FIX(v1.2): budget usage accumulates in cents.
+  // FIX(v3.0): one shared definition (refunds net back into their category).
   const spent = {};
-  for (const t of state.transactions){
-    if (!t.date || t.date.slice(0,4) !== String(yr)) continue;
-    if (!['Expense','Income','Investment'].includes(t.type)) continue;
-    const m = monthAbbr[parseInt(t.date.slice(5,7)) - 1];
-    const k = `${t.type}|${t.category}|${m}`;
-    spent[k] = (spent[k] || 0) + toCents(t.amount);
-  }
-  for (const k of Object.keys(spent)) spent[k] = fromCents(spent[k]);
+  monthAbbr.forEach((m, i) => {
+    for (const [k, v] of Object.entries(budgetSpentMap(yr, i + 1))) spent[`${k}|${m}`] = v;
+  });
 
   const listHTML = yearBudgets.length === 0 ? '' : `
     <div class="field">
@@ -72,7 +93,7 @@ function renderBudgetsSheet(){
               <div class="sb-month">${monthName(i+1, true)}</div>
               <div class="sb-field">
                 <label>Budget</label>
-                <input class="sb-input b-cell" data-id="${current.id}" data-m="${m}" data-midx="${i+1}" type="text" inputmode="decimal" value="${target.toFixed(2)}" />
+                <input class="sb-input b-cell" data-id="${esc(current.id)}" data-m="${m}" data-midx="${i+1}" type="text" inputmode="decimal" value="${target.toFixed(2)}" />
               </div>
               <div class="sb-calc">
                 <div class="sb-calc-row">

@@ -27,13 +27,23 @@
 
    Everything sums in integer cents. Only computed for the live
    calendar month — past months are facts, not forecasts.
+
+   FIX(v3.0): only EXPENSE bills count as fixed spending. CC Payment, Loan
+   Payment and auto-CC bills were added to projected spending too — but a
+   card payment is never "spending" in the totals (the purchases already
+   were), so the projection ran high by every unpaid card/loan bill and then
+   dropped by that amount the moment you paid it. The same inflated number
+   fed the "On pace for $X" insight.
    ============================================================ */
 
-import { monthAbbr, toCents, fromCents, round2, addDays, toLocalISO, parseLocalDate } from './util.js';
+import { monthAbbr, toCents, fromCents, round2, addDays, parseLocalDate, squash } from './util.js';
 import { state, dataVersion } from './db.js';
 import { monthTotals } from './effects.js';
 import { detectRecurring } from './subscriptions.js';
-import { billAppliesToMonth, getBillAmount, getBillDueDay } from './bills.js';
+import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid } from './bills.js';
+
+// Bills that are spending (as opposed to paying down a card or loan).
+export const isExpenseBill = (b) => b.recurrence !== 'auto-cc' && (b.type || 'Expense') === 'Expense';
 
 /* ── Income stream detection — amount-clustered, recency-scoped ──────
    Category-level cadence detection (subscriptions.js) fails on income
@@ -105,25 +115,32 @@ export function computePace(){
   const spentSoFar = toCents(tot.exp);
   const incSoFar = toCents(tot.inc);
 
-  /* ── fixed remaining: unpaid bills due from today onward ── */
+  /* ── fixed remaining: unpaid EXPENSE bills due from today onward ── */
   let fixedRemaining = 0;
   const billCategories = new Set();
+  const billNames = [];
   for (const b of state.bills){
-    if (b.active === false) continue;
+    if (b.active === false || !isExpenseBill(b)) continue;
     if (!billAppliesToMonth(b, year, month)) continue;
     if (b.category) billCategories.add(b.category);
-    const paid = !!(b.paidMonths || {})[ym];
-    if (paid) continue;
-    if (getBillDueDay(b) >= D) fixedRemaining += toCents(getBillAmount(b));
+    if (squash(b.name).length >= 3) billNames.push(squash(b.name));
+    if (isBillPaid(b, ym)) continue;
+    // A one-time bill carried from an earlier month is due now.
+    const carried = b.recurrence === 'once' && b.dueDate && b.dueDate.slice(0, 7) < ym;
+    if (carried || getBillDueDay(b) >= D) fixedRemaining += toCents(getBillAmount(b));
   }
 
   /* ── recurring expenses (subscriptions) ── */
   const recurring = detectRecurring('Expense', 400);
-  const recurringCats = new Set(recurring.map(r => r.category));
+  // NEW(v3.0): exact — the transactions that belong to a detected series.
+  const recurringIds = new Set();
+  for (const r of recurring) for (const id of r.txnIds) recurringIds.add(id);
   // remaining: next occurrence falls within (today, month-end], skipping
   // anything the bills store already covers (no double counting)
+  const coveredByBill = (r) => (r.category && billCategories.has(r.category)) ||
+    billNames.some(n => squash(r.label).includes(n));
   for (const r of recurring){
-    if (r.category && billCategories.has(r.category)) continue;
+    if (coveredByBill(r)) continue;
     let next = r.next;
     let guard = 0;
     while (next && next <= monthEnd && guard++ < 4){
@@ -133,8 +150,8 @@ export function computePace(){
   }
 
   /* ── variable vs fixed split for a given month ──
-     fixed-so-far = bill-logged txns (ids in paidMonths) + txns in
-     recurring-detected categories. The rest is variable. */
+     fixed-so-far = bill-logged txns (ids in paidMonths) + txns belonging to
+     a detected recurring series. The rest is variable. */
   const billTxnIds = new Set();
   for (const b of state.bills){
     for (const id of Object.values(b.paidMonths || {})) billTxnIds.add(id);
@@ -144,8 +161,7 @@ export function computePace(){
     let v = 0;
     for (const t of state.transactions){
       if (t.type !== 'Expense' || !t.date || t.date.slice(0,7) !== key) continue;
-      if (billTxnIds.has(t.id)) continue;
-      if (t.category && recurringCats.has(t.category)) continue;
+      if (billTxnIds.has(t.id) || recurringIds.has(t.id)) continue;
       v += toCents(t.amount);
     }
     return v;

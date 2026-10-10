@@ -77,24 +77,43 @@ When we change things, you'll have a new set of files. From the repo folder:
 ```bash
 # replace the changed files (or the whole folder contents), then:
 git add -A
-git commit -m "v2.10.0"
+git commit -m "v3.0.0"
 git push
 ```
 
 - Pages redeploys automatically, ~60 seconds after push.
-- On the phone, the service worker picks up the new version the next time
-  you open the app (occasionally it takes one extra open-close cycle —
-  the version number in More → About tells you what's live).
+- On the phone, the app shows **"Update ready · Reload"** once the new
+  version has installed (the version number in More → About tells you
+  what's live).
 
 **Tiny edits without the PC:** any single file can be edited straight in
 the GitHub web UI (open file → pencil icon → commit), including from the
 phone's browser. Pages redeploys the same way.
 
+### Tests gate the deploy (v3.0)
+
+`.github/workflows/pages.yml` runs the test suite on every push and only
+deploys if it passes — a broken change never reaches the phone. It also
+publishes only the app files (no tests/docs). One-time switch:
+
+1. Repo → **Settings** → **Pages** → *Build and deployment* → **Source:
+   GitHub Actions** (instead of "Deploy from a branch").
+2. Push. The **Actions** tab shows *Test & deploy*: a green `test` job,
+   then `deploy`. Same URL as before; nothing on the phone changes.
+
+Until that switch is made, the branch deploy keeps working as before and
+the workflow's `deploy` job fails harmlessly (tests still run).
+
+> ⚠️ **Never commit a real backup or statement.** `.gitignore` blocks
+> `ledger-backup-*.json` and `*.csv` — keep them outside this folder anyway.
+
 ---
 
-## Running the tests (optional, at the PC)
+## Running the tests (at the PC)
+
+Requires Node 20+ (`winget install OpenJS.NodeJS.LTS` on Windows).
 
 ```bash
 npm install   # once
-npm test      # 9 suites, ~300 checks, all synthetic data
+npm test      # 17 suites, 363 checks, all synthetic data
 ```

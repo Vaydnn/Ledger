@@ -1,23 +1,26 @@
 // Ledger PWA service worker
-// FIX(v2.9.1): precached files are now served CACHE-ONLY. The old handler
-// revalidated each cached file in the background per-fetch, which could mix
-// modules from two deploys in one cache (new db.js + old app.js = a torn,
-// undebuggable module graph). Now the VERSION bump is the one and only
-// update mechanism: every load is a coherent snapshot of a single release,
-// and app.js shows an "update ready" toast when a new SW has installed.
-const VERSION = 'ledger-v2.10.2';
+// FIX(v2.9.1): precached files are served CACHE-ONLY. The VERSION bump is the
+// one and only update mechanism: every load is a coherent snapshot of a
+// single release, and app.js shows an "update ready" toast when a new SW has
+// installed.
+// FIX(v3.0): install fetches every file with `cache: 'reload'`. GitHub Pages
+// serves files with Cache-Control: max-age=600, so a new version installed
+// within 10 minutes of the previous one could fill its cache with the OLD
+// files straight out of the browser's HTTP cache — a new sw.js running last
+// release's code.
+const VERSION = 'ledger-v3.0.0';
 const CORE = [
   './',
   './index.html',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png',
-  // FIX(v1.2): seed.json was missing from the precache — a first run while
-  // offline could never seed the demo data.
   './seed.json',
-  // NEW(v2.9.1): SheetJS vendored locally — export/import/reconcile now work
-  // offline, and no third-party CDN script runs in a page holding finances.
-  './js/vendor/xlsx.full.min.js',
+  // NEW(v3.0): self-hosted fonts (were Google Fonts, uncached offline)
+  './fonts/geist.woff2',
+  './fonts/instrument-serif.woff2',
+  './fonts/instrument-serif-italic.woff2',
+  './fonts/jetbrains-mono.woff2',
   './js/app.js',
   './js/util.js',
   './js/db.js',
@@ -39,7 +42,6 @@ const CORE = [
   './js/breakdown.js',
   './js/yearview.js',
   './js/forecast.js',
-  // NEW(v2.0)
   './js/reconcile.js',
   './js/goals.js',
   './js/trash.js',
@@ -48,7 +50,9 @@ const CORE = [
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting())
+    caches.open(VERSION)
+      .then((c) => c.addAll(CORE.map((u) => new Request(u, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -64,12 +68,11 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   e.respondWith(
-    caches.match(req).then((cached) => {
+    caches.match(req, { ignoreSearch: req.mode === 'navigate' }).then((cached) => {
       // Precached (and previously fetched same-origin) files: cache-only.
-      // No background revalidation — updates arrive solely via VERSION bump.
       if (cached) return cached;
-      // Anything else (fonts CSS, uncached extras): network, snapshot
-      // same-origin 200s into this version's cache for offline reuse.
+      // Anything else: network, snapshot same-origin 200s into this
+      // version's cache for offline reuse.
       return fetch(req).then((res) => {
         if (res && res.status === 200 && res.type === 'basic') {
           const copy = res.clone();
@@ -77,8 +80,7 @@ self.addEventListener('fetch', (e) => {
         }
         return res;
       }).catch(() =>
-        // FIX(v2.10.2): an offline miss used to reject respondWith (unhandled
-        // rejection). Serve the app shell for navigations; fail cleanly otherwise.
+        // FIX(v2.10.2): offline miss → app shell for navigations, clean error otherwise.
         req.mode === 'navigate' ? caches.match('./index.html') : Response.error()
       );
     })

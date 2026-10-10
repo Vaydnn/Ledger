@@ -117,7 +117,7 @@ export function renderDebts(){
     <div class="card" style="margin-bottom:14px;">
       <h3 class="card-title">Total Debt</h3>
       <div style="font-family:'Instrument Serif',serif;font-size:42px;color:var(--amber);line-height:1;">${fmtShort(total)}</div>
-      <div class="muted small" style="margin-top:6px;">${ccs.length} card${ccs.length!==1?'s':''} · ${loans.length} loan${loans.length!==1?'':''} · as of ${monthName(month,true)} ${year}</div>
+      <div class="muted small" style="margin-top:6px;">${ccs.length} card${ccs.length!==1?'s':''} · ${loans.length} loan${loans.length!==1?'s':''} · as of ${monthName(month,true)} ${year}</div>
     </div>
 
     ${renderStrategyCard(debts)}
@@ -217,7 +217,7 @@ function renderDebtCard(acct, year, month){
           </div>
         </div>
         <div class="debt-actions">
-          <button class="btn secondary dp-edit" data-acct="${acct.name}">Add Plan</button>
+          <button class="btn secondary dp-edit" data-acct="${esc(acct.name)}">Add Plan</button>
         </div>
       </div>
     `;
@@ -243,10 +243,10 @@ function renderDebtCard(acct, year, month){
           <div class="debt-name">${esc(acct.name)}</div>
           <div class="debt-bal">${fmt(bal)}</div>
           <div class="debt-meta">
-            ${isPromo ? `0% APR · ends ${plan.promoEndDate}` : (plan.apr != null ? `${plan.apr}% APR` : 'No APR set')}
+            ${isPromo ? `0% APR · ends ${esc(plan.promoEndDate)}` : (plan.apr != null ? `${esc(plan.apr)}% APR` : 'No APR set')}
           </div>
         </div>
-        <button class="btn ghost dp-edit" data-acct="${acct.name}" style="width:auto;padding:8px 14px;font-size:12px;">Edit</button>
+        <button class="btn ghost dp-edit" data-acct="${esc(acct.name)}" style="width:auto;padding:8px 14px;font-size:12px;">Edit</button>
       </div>
 
       <div class="debt-progress">
@@ -333,15 +333,15 @@ function openPlanSheet(acctName){
       </div>
       <div class="field">
         <label>Original Balance <span class="muted small">(starting amount you're paying off)</span></label>
-        <input class="input" id="dp-orig" type="number" step="0.01" inputmode="decimal" value="${origVal}" />
+        <input class="input" id="dp-orig" type="number" step="0.01" inputmode="decimal" value="${esc(origVal)}" />
       </div>
       <div class="row-2">
-        <div class="field"><label>Standard APR (%)</label><input class="input" id="dp-apr" type="number" step="0.01" inputmode="decimal" value="${v.apr}" placeholder="29.99" /></div>
-        <div class="field"><label>Min Payment ($)</label><input class="input" id="dp-min" type="number" step="0.01" inputmode="decimal" value="${v.min}" placeholder="35" /></div>
+        <div class="field"><label>Standard APR (%)</label><input class="input" id="dp-apr" type="number" step="0.01" inputmode="decimal" value="${esc(v.apr)}" placeholder="29.99" /></div>
+        <div class="field"><label>Min Payment ($)</label><input class="input" id="dp-min" type="number" step="0.01" inputmode="decimal" value="${esc(v.min)}" placeholder="35" /></div>
       </div>
       <div class="row-2">
-        <div class="field"><label>Promo APR End Date</label><input class="input" id="dp-promo" type="date" value="${v.promo}" /></div>
-        <div class="field"><label>Target Payoff Date</label><input class="input" id="dp-target" type="date" value="${v.target}" /></div>
+        <div class="field"><label>Promo APR End Date</label><input class="input" id="dp-promo" type="date" value="${esc(v.promo)}" /></div>
+        <div class="field"><label>Target Payoff Date</label><input class="input" id="dp-target" type="date" value="${esc(v.target)}" /></div>
       </div>
       <div class="field"><label>Notes</label><input class="input" id="dp-notes" value="${esc(v.notes)}" placeholder="e.g. balance transfer from Citi" /></div>
       <button class="btn" id="dp-save">Save Plan</button>
@@ -372,7 +372,9 @@ function openPlanSheet(acctName){
         id: existing?.id || uid(),
         account: f.account,
         originalBalance: num('#dp-orig', 0),
-        apr: num('#dp-apr', null) || null,
+        // FIX(v3.0): `|| null` turned a real 0% APR (0% financing) into
+        // "no APR set", which dropped the debt from the payoff strategy.
+        apr: num('#dp-apr', null),
         minPayment: num('#dp-min', 0),
         promoEndDate: $('#dp-promo').value || null,
         targetPayoffDate: $('#dp-target').value || null,

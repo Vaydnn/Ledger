@@ -1,0 +1,52 @@
+# Test, then deploy to GitHub Pages — a push whose tests fail never reaches
+# the phone. Requires one setting: repo Settings → Pages → Build and
+# deployment → Source: "GitHub Actions" (instead of "Deploy from a branch").
+# Only app files are published; tests, docs, and package files are not.
+name: Test & deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble the site (app files only)
+        run: |
+          mkdir _site
+          cp -r index.html manifest.webmanifest sw.js seed.json icon-192.png icon-512.png js fonts _site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

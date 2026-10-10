@@ -82,12 +82,13 @@ const stats2 = $$('.rec-stat .v').map(e => e.textContent.trim());
 check('statement-only count dropped', parseInt(stats2[1]) === fakeCount - 1, stats2[1]);
 addBtn = $('.rc-add');
 if (addBtn){ addBtn.click(); await tick(400); }
+// v3.0: statement names are cleaned + title-cased for unknown merchants.
 check('both fakes now in the ledger',
-  state.transactions.some(t => t.description === 'FAKE WINGS') &&
-  state.transactions.some(t => t.description === 'FAKE GAME'));
+  state.transactions.some(t => t.description === 'Fake Wings') &&
+  state.transactions.some(t => t.description === 'Fake Game'));
 const stats3 = $$('.rec-stat .v').map(e => e.textContent.trim());
 check('statement-only cleared after inline adds', parseInt(stats3[1]) === 0, stats3[1]);
-check('inline adds got a category', state.transactions.filter(t => t.description.startsWith('FAKE')).every(t => !!t.category));
+check('inline adds got a category', state.transactions.filter(t => t.description.startsWith('Fake')).every(t => !!t.category));
 
 check('zero captured errors', errors.length === 0, errors[0]);
 done('reconcile e2e tests');

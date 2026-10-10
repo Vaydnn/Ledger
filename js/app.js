@@ -8,8 +8,8 @@
    both modules are fully loaded.
    ============================================================ */
 
-import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, haptic } from './util.js';
-import { state, loadState, saveSelected, seedFromJSON, TAB_ID, purgeTombstones, scrubLegacyData } from './db.js';
+import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, esc } from './util.js';
+import { state, loadState, saveSelected, saveFlags, seedFromJSON, TAB_ID, purgeTombstones, scrubLegacyData } from './db.js';
 import { restoreJSON, maybeBackupNudge } from './manage.js';
 import { initSheet, openSheet, closeSheet, isSheetOpen } from './sheet.js';
 import { renderHome } from './home.js';
@@ -20,7 +20,7 @@ import { renderDebts } from './debts.js';
 import { renderMore } from './more.js';
 import { maybeAutoSnapshot } from './networth.js'; // NEW(v2.0)
 import { purgeTrash } from './trash.js';           // NEW(v2.0)
-import { ensureYearCarryover } from './balances.js'; // NEW(v2.10.2)
+import { ensureAnchorsMigrated, migrateLegacyBalances } from './balances.js'; // NEW(v3.0)
 
 /* ─── Navigation ─────────────────────────── */
 export function renderCurrent(){
@@ -195,6 +195,9 @@ function showFirstRun(){
       if (!res.ok) throw new Error('seed.json unavailable');
       await seedFromJSON(await res.json());
       await loadState();
+      // A pre-v3 seed carries month-by-month balances; a v3 seed, openings.
+      if (state.startingBalances.length) await migrateLegacyBalances();
+      else { state.flags.anchorsV3 = true; await saveFlags(); }
       dismiss();
     } catch(e){
       console.warn('Seed load failed:', e);
@@ -208,11 +211,11 @@ function showFirstRun(){
 async function init(){
   await loadState();
 
-  // FIX(v2.10.2): before the first paint, seed current-year starting-balance
-  // records for dormant accounts from their prior-year December ending —
-  // otherwise they render as $0 all January until a transaction touches them.
-  // No-op except in the window after a year rollover, and non-fatal.
-  try { await ensureYearCarryover(); } catch(e){ console.warn('Year carryover failed', e); }
+  // NEW(v3.0): one-time upgrade from stored month-by-month balances to
+  // derived balances + pinned openings. Runs before the first paint so the
+  // very first render already uses the new model. On failure the flag stays
+  // unset and it simply retries next launch.
+  try { await ensureAnchorsMigrated(); } catch(e){ console.warn('Balance migration failed', e); }
 
   if (isFreshInstall()) showFirstRun();
 
@@ -261,5 +264,5 @@ async function init(){
 
 init().catch(e => {
   console.error(e);
-  $('#splash').innerHTML = '<div style="color:#e89954;text-align:center;padding:20px;">Error loading: '+e.message+'</div>';
+  $('#splash').innerHTML = '<div style="color:#e89954;text-align:center;padding:20px;">Error loading: '+esc(e.message)+'</div>';
 });

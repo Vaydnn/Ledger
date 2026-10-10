@@ -1,15 +1,17 @@
 {
   "name": "ledger",
-  "version": "2.10.2",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "description": "Personal finance PWA — vanilla JS, IndexedDB, offline-first. Data never leaves the device.",
   "scripts": {
     "test": "node tests/run.mjs"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0",
-    "jsdom": "^24.0.0",
-    "xlsx": "0.18.5"
+    "jsdom": "^24.0.0"
   }
 }

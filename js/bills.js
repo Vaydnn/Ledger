@@ -1,55 +1,68 @@
 /* ============================================================
    bills.js — Bills tab view + bill edit sheet + pay/unpay actions.
 
-   v1.1.2 addition: bills can now be one-time (recurrence: 'once')
-   in addition to recurring monthly. A one-time bill has a full
-   `dueDate` (YYYY-MM-DD) and only shows up in views for its target
-   month — it doesn't leak forward to subsequent months. dueDay is
-   still maintained on both kinds for sorting and status display.
-
-   v1.1.3 addition: a third recurrence type, 'auto-cc', for
-   pay-in-full credit cards. The bill's amount is *live* — it reads
-   balanceLatest() of a linked Credit Card account on every render —
-   and its due day is computed from a configurable statement close
-   day + grace period. This makes "Real available" reflect rolling
-   CC charges in real time. See getBillAmount / getBillDueDay below.
+   v1.1.2: bills can be one-time (recurrence: 'once') with a full dueDate.
+   v1.1.3: 'auto-cc' bills track a linked card's live balance.
+   v3.0:
+   - An UNPAID one-time bill no longer vanishes when its month ends — it
+     carries forward as overdue (and keeps counting against Real Available)
+     until it's paid. A one-time bill is paid once, in whatever month.
+   - "Looks paid": a transaction logged by hand that matches an unpaid bill
+     (same account + type, amount within 10%, name/category agree) is offered
+     as the payment — one tap links it instead of the bill sitting unpaid and
+     being subtracted from Real Available a second time.
+   - Pay / Unpay / Save are double-tap safe.
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthName, today, uid, clamp, toast, toastAction, sumMoney, round2, parseAmount, toCents, fromCents, haptic, esc } from './util.js';
+import { $, $$, fmt, fmtShort, monthName, today, uid, clamp, toast, toastAction, sumMoney, round2, parseAmount, toCents, fromCents, haptic, esc, squash, ymOf, currentYm, daysBetween, busyGuard } from './util.js';
 import { state, dbPut, dbDel } from './db.js';
 import { balanceAt, balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { renderCurrent } from './app.js';
-import { cascadeForChange } from './balances.js';
 import { trashTxn, restoreTxn } from './trash.js';
 
+/* ── Paid state ─────────────────────────────────────────────────────── */
+// paidMonths maps 'YYYY-MM' → id of the payment transaction. A monthly bill
+// is paid per month; a one-time bill is paid once, whichever month that was.
+export function isBillPaid(bill, ym){
+  const pm = bill.paidMonths || {};
+  if (bill.recurrence === 'once') return Object.values(pm).some(Boolean);
+  return !!pm[ym];
+}
+function paidKey(bill, ym){
+  const pm = bill.paidMonths || {};
+  if (bill.recurrence === 'once') return Object.keys(pm).find(k => pm[k]) || null;
+  return pm[ym] ? ym : null;
+}
+// Is this transaction already recorded as some bill's payment?
+export function linkedBillFor(txnId){
+  return state.bills.find(b => Object.values(b.paidMonths || {}).includes(txnId)) || null;
+}
+
 // True if this bill should appear in the views for the given (year, month).
-// - Monthly bills always apply (recurring).
-// - One-time bills only apply if their dueDate falls in (year, month).
-// - Auto-cc bills always apply (the linked card has a balance every month).
-// Used by bills tab, home tab, and any total/preview that needs to
-// answer "is this bill relevant right now?" Treats missing recurrence
-// as 'monthly' for back-compat with pre-1.1.2 data.
+// - Monthly and auto-cc bills always apply.
+// - One-time bills apply in their due month; FIX(v3.0) — and, while unpaid,
+//   in every later month up to the current one (they're still owed), plus
+//   the month they were eventually paid in.
+// Missing recurrence = 'monthly' (pre-1.1.2 data).
 export function billAppliesToMonth(bill, year, month){
   const rec = bill.recurrence || 'monthly';
   if (rec === 'monthly' || rec === 'auto-cc') return true;
   if (rec === 'once'){
     if (!bill.dueDate) return false;
-    const ym = `${year}-${String(month).padStart(2,'0')}`;
-    return bill.dueDate.slice(0,7) === ym;
+    const ym = ymOf(year, month);
+    const due = bill.dueDate.slice(0, 7);
+    if (due === ym) return true;
+    if (due > ym) return false;
+    if ((bill.paidMonths || {})[ym]) return true;          // paid late, in this month
+    return !isBillPaid(bill, ym) && ym <= currentYm();      // still owed
   }
   return true;
 }
 
 // Effective amount owed for a bill — live for auto-cc, stored otherwise.
-// Auto-cc reads the linked account's current running balance and clamps
-// to >= 0 (a CC with a credit balance owes nothing). Returns 0 if the
-// linked account no longer exists, so renamed/deleted accounts degrade
-// gracefully rather than throwing.
-// FIX(v2.9.1): optional (year, month) context. Without it, browsing a past
-// month showed TODAY'S card balance against that month's cash — a "Real
-// available" figure that never existed. Non-live months now read the card's
-// balance as of that month; the live month (or no context) stays live.
+// FIX(v2.9.1): optional (year, month) context — past months read the card's
+// balance as of that month instead of today's.
 export function getBillAmount(bill, year, month){
   if (bill.recurrence !== 'auto-cc') return bill.amount || 0;
   if (!bill.linkedAccount) return 0;
@@ -59,15 +72,11 @@ export function getBillAmount(bill, year, month){
   return Math.max(0, Math.round(bal * 100) / 100);
 }
 
-/* ── NEW(v2.9.1): the single source of truth for "Real available" ──────
-   Home and Bills used to compute this independently — Home subtracted the
-   configured realAvailCards balances (with the auto-cc double-count guard),
-   Bills ignored the setting entirely, so two screens showed two different
-   numbers under the same label. Both views now render from this. */
+/* ── NEW(v2.9.1): the single source of truth for "Real available" ────── */
 export function computeRealAvailable(year, month){
-  const ym = `${year}-${String(month).padStart(2,'0')}`;
+  const ym = ymOf(year, month);
   const billsThisMonth = state.bills.filter(b => b.active !== false && billAppliesToMonth(b, year, month));
-  const stdUnpaid = billsThisMonth.filter(b => b.recurrence !== 'auto-cc' && !(b.paidMonths || {})[ym]);
+  const stdUnpaid = billsThisMonth.filter(b => b.recurrence !== 'auto-cc' && !isBillPaid(b, ym));
   const autoCcAll = billsThisMonth.filter(b => b.recurrence === 'auto-cc');
 
   // Configured card deduction (⚙ on the Home card, flags.realAvailCards).
@@ -95,7 +104,7 @@ export function computeRealAvailable(year, month){
   // carry a balance (a fully-paid card stays out of your face).
   const unpaidBills = [
     ...stdUnpaid,
-    ...autoCcAll.filter(b => getBillAmount(b, year, month) > 0 && !(b.paidMonths || {})[ym])
+    ...autoCcAll.filter(b => getBillAmount(b, year, month) > 0 && !isBillPaid(b, ym))
   ];
 
   const cardDeduct = fromCents(cardDeductC);
@@ -107,9 +116,7 @@ export function computeRealAvailable(year, month){
 }
 
 // Effective dueDay for status display + sorting. For auto-cc, this is
-// (closeDay + graceDays) wrapped into 1..30 — an approximate calendar
-// day that lines up with "real" payment due timing for typical cards
-// (e.g. close=15 + grace=21 → due day 6 of the following month).
+// (closeDay + graceDays) wrapped into 1..30.
 export function getBillDueDay(bill){
   if (bill.recurrence !== 'auto-cc') return bill.dueDay || 1;
   const close = bill.closeDay || 1;
@@ -119,8 +126,12 @@ export function getBillDueDay(bill){
 }
 
 export function billStatus(b, ym, isCurrentMonth, todayDay){
-  const paid = (b.paidMonths || {})[ym];
-  if (paid) return { kind:'paid', label:'Paid' };
+  if (isBillPaid(b, ym)) return { kind:'paid', label:'Paid' };
+  // NEW(v3.0): a one-time bill carried past its due month.
+  if (b.recurrence === 'once' && b.dueDate && b.dueDate.slice(0, 7) < ym){
+    const days = daysBetween(b.dueDate, today());
+    return { kind:'overdue', label: days > 0 ? `${days}d overdue` : 'Overdue' };
+  }
   if (!isCurrentMonth) return { kind:'future', label:'' };
   const due = getBillDueDay(b);
   const days = due - todayDay;
@@ -128,6 +139,55 @@ export function billStatus(b, ym, isCurrentMonth, todayDay){
   if (days === 0) return { kind:'today', label:'Due today' };
   if (days <= 3) return { kind:'soon', label:`Due in ${days}d` };
   return { kind:'future', label:`Due in ${days}d` };
+}
+
+/* ── NEW(v3.0): matching hand-logged transactions to bills ───────────── */
+export function billMatchesTxn(b, t){
+  if (!b || !t || b.active === false) return false;
+  if (b.recurrence === 'auto-cc') return t.type === 'CC Payment' && t.account === b.linkedAccount;
+  const type = b.type || 'Expense';
+  if (t.type !== type || t.account !== b.account) return false;
+  if (b.fromAccount && t.fromAccount && t.fromAccount !== b.fromAccount) return false;
+  const amt = b.amount || 0;
+  if (Math.abs((t.amount || 0) - amt) > Math.max(1, amt * 0.1)) return false;
+  // A plain expense on a busy card needs more than the amount to agree —
+  // the bill's name or category must show up on the transaction.
+  if (type === 'Expense'){
+    const name = squash(b.name);
+    const hay = squash(`${t.description || ''} ${t.category || ''}`);
+    const catHit = b.category && t.category === b.category;
+    if (!catHit && !(name.length >= 3 && hay.includes(name))) return false;
+  }
+  return true;
+}
+
+// The unpaid bill (if any) a just-saved transaction most likely pays.
+export function findMatchingBill(t){
+  if (!t || !t.date || linkedBillFor(t.id)) return null;
+  const ym = t.date.slice(0, 7);
+  const [y, m] = ym.split('-').map(Number);
+  const cands = state.bills.filter(b =>
+    billAppliesToMonth(b, y, m) && !isBillPaid(b, ym) && billMatchesTxn(b, t));
+  cands.sort((a, b) => Math.abs((a.amount || 0) - t.amount) - Math.abs((b.amount || 0) - t.amount));
+  return cands[0] || null;
+}
+
+// The transaction (if any) in a month that looks like this bill's payment.
+export function findPaymentForBill(b, ym){
+  const linked = new Set();
+  for (const bb of state.bills) for (const id of Object.values(bb.paidMonths || {})) linked.add(id);
+  const hits = state.transactions.filter(t => t.date && t.date.slice(0, 7) === ym && !linked.has(t.id) && billMatchesTxn(b, t));
+  hits.sort((a, c) => Math.abs(a.amount - (b.amount || 0)) - Math.abs(c.amount - (b.amount || 0)));
+  return hits[0] || null;
+}
+
+export async function markBillPaidWith(bill, ym, txnId){
+  bill.paidMonths = bill.paidMonths || {};
+  bill.paidMonths[ym] = txnId;
+  await dbPut('bills', bill);
+  haptic(15);
+  toast(`"${bill.name}" marked paid`);
+  renderCurrent();
 }
 
 export function billRowHTML(b, ym, isCurrentMonth, todayDay){
@@ -143,58 +203,64 @@ export function billRowHTML(b, ym, isCurrentMonth, todayDay){
   const tag = isOnce ? ' <span class="bill-once-tag">Once</span>'
            : isAuto ? ' <span class="bill-auto-tag">Auto</span>'
            : '';
+  // NEW(v3.0): an unpaid bill with a matching hand-logged transaction.
+  const match = !isPaid ? findPaymentForBill(b, ym) : null;
   return `
-    <div class="bill-row ${isPaid ? 'is-paid' : ''}" data-bill-id="${b.id}">
-      <button class="bill-check ${isPaid ? 'checked' : ''}" data-id="${b.id}" aria-label="Toggle paid">
+    <div class="bill-row ${isPaid ? 'is-paid' : ''}" data-bill-id="${esc(b.id)}">
+      <button class="bill-check ${isPaid ? 'checked' : ''}" data-id="${esc(b.id)}" aria-label="Toggle paid">
         ${isPaid ? '<svg viewBox="0 0 14 14" width="14" height="14"><path d="M2 7l3.5 3.5L12 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>' : ''}
       </button>
       <div class="bill-body">
         <div class="bill-name">${esc(b.name)}${tag}</div>
         <div class="bill-meta">
-          <span class="bill-status ${st.kind}">${st.label || `Day ${dueDay}`}</span>
+          <span class="bill-status ${st.kind}">${st.label || (isOnce ? `Due ${esc(b.dueDate)}` : `Day ${dueDay}`)}</span>
           <span class="bill-acct">· ${acctMeta}</span>
         </div>
+        ${match ? `
+          <div class="bill-match">
+            Looks paid: ${fmt(match.amount)} on ${esc(match.date.slice(5))}${match.description ? ' · ' + esc(match.description) : ''}
+            <button type="button" class="bill-link" data-bill="${esc(b.id)}" data-txn="${esc(match.id)}" data-ym="${ym}">Link</button>
+          </div>` : ''}
       </div>
       <div class="bill-amt mono">${fmtShort(liveAmount)}</div>
     </div>
   `;
 }
 
+// NEW(v3.0): wiring shared by the Bills view and Home's Upcoming card.
+export function wireBillRows(root){
+  $$('.bill-link', root).forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const bill = state.bills.find(b => b.id === btn.dataset.bill);
+    if (bill) markBillPaidWith(bill, btn.dataset.ym, btn.dataset.txn);
+  }));
+}
+
 export function renderBills(){
   const v = $('#view-bills');
   const { year, month } = state.selected;
-  const ym = `${year}-${String(month).padStart(2,'0')}`;
+  const ym = ymOf(year, month);
   const isCurrentMonth = (year === new Date().getFullYear() && month === new Date().getMonth() + 1);
   const todayDay = new Date().getDate();
 
   const bills = state.bills.filter(b => b.active !== false && billAppliesToMonth(b, year, month));
 
-  // Total/Paid/Unpaid math is split because auto-cc bills work differently:
-  //   - Standard bills: a static amount; once paid this month, it doesn't
-  //     contribute to "unpaid" anymore.
-  //   - Auto-cc bills: amount is the LIVE running balance. Even after you
-  //     "pay" this month, new charges immediately re-accrue, and that new
-  //     balance still needs to come out of real-available cash. So auto-cc
-  //     bills always contribute their live amount to unpaid total — the
-  //     "Paid" status badge is informational only ("you paid this month").
+  // Standard bills: static amount; once paid it stops counting as unpaid.
+  // Auto-cc bills: amount is the LIVE balance and always counts — paying
+  // just zeroes it, and new charges re-accrue immediately.
   const standardBills = bills.filter(b => b.recurrence !== 'auto-cc');
   const autoCcBills   = bills.filter(b => b.recurrence === 'auto-cc');
 
-  // FIX(v1.2): bill totals + cash now sum in cents — float drift over many
-  // bills/accounts could flip the pos/neg coloring on "Real available".
   const stdTotal = sumMoney(standardBills, b => b.amount || 0);
-  const stdPaid  = sumMoney(standardBills.filter(b => (b.paidMonths || {})[ym]), b => b.amount || 0);
+  const stdPaid  = sumMoney(standardBills.filter(b => isBillPaid(b, ym)), b => b.amount || 0);
   const autoCcLive = sumMoney(autoCcBills, b => getBillAmount(b, year, month));
 
   const totalDue    = round2(stdTotal + autoCcLive);
-  const paidTotal   = stdPaid;        // shown in the Paid tile (standard bills only)
+  const paidTotal   = stdPaid;
   const unpaidTotal = round2((stdTotal - stdPaid) + autoCcLive);
 
-  // FIX(v2.9.1): same math as Home — this view used to ignore the
-  // realAvailCards setting, so Home and Bills disagreed on the number.
   const ra = computeRealAvailable(year, month);
 
-  // Group bills by status
   const groups = { overdue:[], today:[], soon:[], future:[], paid:[] };
   bills.forEach(b => {
     const st = billStatus(b, ym, isCurrentMonth, todayDay);
@@ -209,12 +275,8 @@ export function renderBills(){
     </div>
   ` : '';
 
-  // FIX(v2.10.1): paused bills were stranded — active:false filtered them out
-  // of every view, but the only path to the Active toggle is tapping a bill
-  // row, so a paused bill could never be reactivated from the UI. They now
-  // render in a dimmed "Paused" section: no pay checkbox (they're excluded
-  // from all money math on purpose), tap opens the editor where the existing
-  // Yes/No toggle brings them back.
+  // FIX(v2.10.1): paused bills render in a dimmed section so they can be
+  // reactivated (tap opens the editor).
   const pausedBills = state.bills
     .filter(b => b.active === false)
     .sort((a, b) => getBillDueDay(a) - getBillDueDay(b));
@@ -228,7 +290,7 @@ export function renderBills(){
              : isAuto ? ' <span class="bill-auto-tag">Auto</span>'
              : '';
     return `
-      <div class="bill-row is-paused" data-bill-id="${b.id}" style="opacity:.55;">
+      <div class="bill-row is-paused" data-bill-id="${esc(b.id)}" style="opacity:.55;">
         <div class="bill-body" style="margin-left:0;">
           <div class="bill-name">${esc(b.name)}${tag}</div>
           <div class="bill-meta">
@@ -292,26 +354,24 @@ export function renderBills(){
     e.stopPropagation();
     const bill = state.bills.find(x => x.id === b.dataset.id);
     if (!bill) return;
-    if ((bill.paidMonths || {})[ym]) unpayBill(bill.id);
+    if (isBillPaid(bill, ym)) unpayBill(bill.id);
     else payBill(bill.id);
   }));
+  wireBillRows(v);
   $$('.bill-row[data-bill-id]', v).forEach(el => el.addEventListener('click', () => openBillSheet(el.dataset.billId)));
   $('#add-bill', v).addEventListener('click', () => openBillSheet(null));
 }
 
-export async function payBill(billId){
+// FIX(v3.0): double-tap safe, per bill — two quick taps used to log two
+// payment transactions (and orphan the first).
+export const payBill = busyGuard(async (billId) => {
   const bill = state.bills.find(b => b.id === billId);
   if (!bill) return;
   const { year, month } = state.selected;
-  const ym = `${year}-${String(month).padStart(2,'0')}`;
-  if ((bill.paidMonths || {})[ym]) { toast('Already paid'); return; }
+  const ym = ymOf(year, month);
+  if (isBillPaid(bill, ym)) { toast('Already paid'); return; }
 
-  // For auto-cc bills, use the linked card's balance FOR THE VIEWED MONTH
-  // (live when that's the current month). FIX(v2.10.2): this used to always
-  // read the live balance, so paying while browsing a past month logged
-  // today's number dated into that month. If the balance is zero (already
-  // paid down some other way), there's nothing to pay — bail out cleanly
-  // rather than logging a $0 transaction.
+  // Auto-cc: the linked card's balance FOR THE VIEWED MONTH (FIX v2.10.2).
   const isAuto = bill.recurrence === 'auto-cc';
   const payAmount = round2(isAuto ? getBillAmount(bill, year, month) : bill.amount);
   if (isAuto && payAmount <= 0){
@@ -321,28 +381,23 @@ export async function payBill(billId){
 
   const now = new Date();
   const isCurrent = year === now.getFullYear() && month === now.getMonth() + 1;
-  // Pick the txn date: today if you're paying in the current month
-  // (matches reality), otherwise use the bill's actual dueDate (for
-  // one-time) or fabricate one from the month + dueDay (for monthly/auto).
+  // Today if paying in the current month; otherwise the bill's dueDate (one-
+  // time, if it's in the viewed month) or the month + dueDay.
   let dateIso;
   if (isCurrent){
     dateIso = today();
-  } else if (bill.recurrence === 'once' && bill.dueDate){
+  } else if (bill.recurrence === 'once' && bill.dueDate && bill.dueDate.slice(0, 7) === ym){
     dateIso = bill.dueDate;
   } else {
     const dueDay = getBillDueDay(bill);
-    dateIso = `${year}-${String(month).padStart(2,'0')}-${String(Math.min(dueDay, 28)).padStart(2,'0')}`;
+    dateIso = `${ym}-${String(Math.min(dueDay, 28)).padStart(2,'0')}`;
   }
-
-  // For auto-cc, the txn must target the linked CC account (so the
-  // payment actually pays it down). For standard bills, use bill.account.
-  const txnAccount = isAuto ? bill.linkedAccount : bill.account;
 
   const txn = {
     id: uid(),
     date: dateIso,
     type: bill.type || 'Expense',
-    account: txnAccount,
+    account: isAuto ? bill.linkedAccount : bill.account,
     category: bill.category || bill.name,
     description: bill.name + ' (auto)',
     amount: payAmount,
@@ -350,8 +405,7 @@ export async function payBill(billId){
   };
   await dbPut('transactions', txn);
   state.transactions.unshift(txn);
-  state.transactions.sort((a,b) => b.date.localeCompare(a.date));
-  await cascadeForChange(null, txn);
+  state.transactions.sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
   bill.paidMonths = bill.paidMonths || {};
   bill.paidMonths[ym] = txn.id;
@@ -360,32 +414,28 @@ export async function payBill(billId){
   haptic(15); /* NEW(v2.2) */
   toast('Marked paid · transaction logged');
   renderCurrent();
-}
+}, (billId) => billId);
 
-export async function unpayBill(billId){
+export const unpayBill = busyGuard(async (billId) => {
   const bill = state.bills.find(b => b.id === billId);
   if (!bill) return;
   const { year, month } = state.selected;
-  const ym = `${year}-${String(month).padStart(2,'0')}`;
-  const txnId = (bill.paidMonths || {})[ym];
-  if (!txnId) return;
+  const key = paidKey(bill, ymOf(year, month));
+  if (!key) return;
+  const txnId = bill.paidMonths[key];
   const removedTxn = state.transactions.find(t => t.id === txnId);
-  // FIX(v2.9.1): soft delete + Undo, like every other delete path. This was
-  // a hard dbDel — and for an auto-cc bill the destroyed payment recorded
-  // the balance AT PAY TIME, so a mistap couldn't be recreated by re-paying
-  // (that logs today's live balance, a different number).
+  // FIX(v2.9.1): soft delete + Undo, like every other delete path.
   if (removedTxn) await trashTxn(removedTxn);
   await dbDel('transactions', txnId);
   state.transactions = state.transactions.filter(t => t.id !== txnId);
-  if (removedTxn) await cascadeForChange(removedTxn, null);
-  delete bill.paidMonths[ym];
+  delete bill.paidMonths[key];
   await dbPut('bills', bill);
   renderCurrent();
   if (removedTxn){
     toastAction('Unpaid · payment moved to trash', 'Undo', async () => {
       await restoreTxn({ ...removedTxn, deletedAt: Date.now() });
       bill.paidMonths = bill.paidMonths || {};
-      bill.paidMonths[ym] = removedTxn.id;
+      bill.paidMonths[key] = removedTxn.id;
       await dbPut('bills', bill);
       renderCurrent();
       toast('Payment restored');
@@ -393,15 +443,10 @@ export async function unpayBill(billId){
   } else {
     toast('Unpaid');
   }
-}
+}, (billId) => billId);
 
-/* FIX(v1.2): the bill editor used six native <select> elements (type, account,
-   from, active, linked card, auto pay-from). Native select popups misbehave in
-   standalone PWA mode on Samsung Internet on foldables — the exact reason the
-   openPicker() bottom-sheet system exists — and the project rule is "no native
-   <select>, ever". The editor is now driven by a form-state object: text/number
-   inputs persist on input, pickers update state, and the sheet re-renders in
-   place (openPicker leaves the sheet open per the v1.1 contract). */
+/* FIX(v1.2): the bill editor is driven by a form-state object (no native
+   <select>s — they misbehave in standalone PWA mode on Samsung Internet). */
 export function openBillSheet(billId){
   const accts = state.accounts.filter(a => a.active);
   const checking = accts.filter(a => a.type === 'Checking');
@@ -478,8 +523,8 @@ export function openBillSheet(billId){
           ${pickerBtn('bf-linked', 'Track Credit Card', f.linkedAccount)}
           ${pickerBtn('bf-auto-from', 'Pay From (Checking)', f.fromAccount)}
           <div class="row-2">
-            <div class="field"><label>Statement Closes (day)</label><input class="input" id="bf-close" type="number" min="1" max="31" inputmode="numeric" value="${f.closeDay}" /></div>
-            <div class="field"><label>Grace Days</label><input class="input" id="bf-grace" type="number" min="0" max="60" inputmode="numeric" value="${f.graceDays}" /></div>
+            <div class="field"><label>Statement Closes (day)</label><input class="input" id="bf-close" type="number" min="1" max="31" inputmode="numeric" value="${esc(f.closeDay)}" /></div>
+            <div class="field"><label>Grace Days</label><input class="input" id="bf-grace" type="number" min="0" max="60" inputmode="numeric" value="${esc(f.graceDays)}" /></div>
           </div>
           <div class="muted small" style="margin:-4px 0 14px;line-height:1.5;">
             Amount auto-tracks the live running balance of the linked card.
@@ -491,13 +536,13 @@ export function openBillSheet(billId){
         <div class="row-2">
           <div class="field"><label>Amount</label><input class="input" id="bf-amt" type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.amount)}" /></div>
           ${isOnce
-            ? `<div class="field"><label>Due Date</label><input class="input" id="bf-date" type="date" value="${f.dueDate}" /></div>`
-            : `<div class="field"><label>Due Day (1–31)</label><input class="input" id="bf-day" type="number" min="1" max="31" inputmode="numeric" value="${f.dueDay}" /></div>`}
+            ? `<div class="field"><label>Due Date</label><input class="input" id="bf-date" type="date" value="${esc(f.dueDate)}" /></div>`
+            : `<div class="field"><label>Due Day (1–31)</label><input class="input" id="bf-day" type="number" min="1" max="31" inputmode="numeric" value="${esc(f.dueDay)}" /></div>`}
         </div>
         ${pickerBtn('bf-type', 'Type', f.type)}
         ${pickerBtn('bf-acct', acctLabelForType(), f.account)}
         ${needsFrom() ? pickerBtn('bf-from', 'From (Checking)', f.fromAccount) : ''}
-        <div class="field"><label>Category <span class="muted small">(optional)</span></label><input class="input" id="bf-cat" value="${esc(f.category)}" placeholder="e.g. Subscriptions" /></div>
+        <div class="field"><label>Category <span class="muted small">(optional — helps match bills you log by hand)</span></label><input class="input" id="bf-cat" value="${esc(f.category)}" placeholder="e.g. Subscriptions" /></div>
       `}
 
       <div class="field">
@@ -579,7 +624,7 @@ export function openBillSheet(billId){
 
     $('#bf-save').addEventListener('click', save);
     if (existing){
-      $('#bf-del').addEventListener('click', async () => {
+      $('#bf-del').addEventListener('click', busyGuard(async () => {
         // FIX(v2.9.2): immediate delete + Undo toast instead of confirm().
         // Past payment transactions are preserved either way.
         const removed = { ...existing, paidMonths: { ...(existing.paidMonths || {}) } };
@@ -593,11 +638,11 @@ export function openBillSheet(billId){
           renderCurrent();
           toast('Bill restored');
         });
-      });
+      }));
     }
   }
 
-  async function save(){
+  const save = busyGuard(async () => {
     const isOnce = f.recurrence === 'once';
     const isAuto = f.recurrence === 'auto-cc';
 
@@ -617,13 +662,11 @@ export function openBillSheet(billId){
       const closeDay = clamp(f.closeDay||1, 1, 31);
       const graceDays = clamp(f.graceDays||0, 0, 60);
       Object.assign(obj, {
-        // amount is irrelevant for auto-cc (always re-read live via
-        // getBillAmount) but stored as 0 for backward compat.
-        amount: 0,
+        amount: 0,   // irrelevant for auto-cc (always read live)
         dueDay: ((closeDay + graceDays - 1) % 30) + 1,
         dueDate: '',
         type: 'CC Payment',
-        account: f.linkedAccount,   // existing CC Payment txn flow expects this
+        account: f.linkedAccount,
         fromAccount: f.fromAccount,
         category: 'CC Payment',
         linkedAccount: f.linkedAccount,
@@ -642,8 +685,6 @@ export function openBillSheet(billId){
         dueDay = clamp(f.dueDay||1, 1, 31);
         dueDate = '';
       }
-      // FIX(v1.2): bill amounts go through parseAmount (same comma/$ safety
-      // and cent-rounding as the Add form).
       const amount = parseAmount(f.amount);
       if (isNaN(amount) || amount <= 0){ toast('Enter a valid amount'); return; }
       if (!f.account){ toast('Pick an account'); return; }
@@ -653,7 +694,6 @@ export function openBillSheet(billId){
         account: f.account,
         fromAccount: needsFrom() ? f.fromAccount : null,
         category: f.category.trim(),
-        // Clear auto-cc fields if switching back from auto-cc
         linkedAccount: '',
         closeDay: 0,
         graceDays: 0
@@ -667,21 +707,19 @@ export function openBillSheet(billId){
     closeSheet();
     renderCurrent();
 
-    // If this is a one-time bill landing in a different month than the
-    // one currently being viewed, tell the user where it went so they
-    // don't think the save silently failed.
+    // A one-time bill landing in a different month than the one being
+    // viewed: say where it went so the save doesn't look lost.
     if (isOnce){
       const sel = state.selected;
       const billMonth = obj.dueDate.slice(0,7);
-      const selMonth = `${sel.year}-${String(sel.month).padStart(2,'0')}`;
-      if (billMonth !== selMonth){
+      if (billMonth > ymOf(sel.year, sel.month)){
         const [yr, mo] = billMonth.split('-').map(Number);
         toast(`Saved · shows in ${monthName(mo, true)} ${yr}`);
         return;
       }
     }
     toast('Saved');
-  }
+  });
 
   render();
   openSheet();

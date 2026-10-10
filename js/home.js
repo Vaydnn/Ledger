@@ -6,18 +6,33 @@
    insights (new in v1.1.0).
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alphaSort, sumMoney, round2, toCents, fromCents, esc, today, haptic } from './util.js';
+import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alphaSort, sumMoney, toCents, fromCents, esc, haptic } from './util.js';
 import { state, dbPut, saveFlags, saveSelected } from './db.js';
 import { balanceAt, monthTotals } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { navigate, renderAll } from './app.js';
-import { txnHTML, openTxnSheet, txnFilters, resetRenderCap } from './txns.js';
-import { billRowHTML, payBill, openBillSheet, getBillDueDay, computeRealAvailable } from './bills.js';
+import { txnHTML, openTxnSheet, filterActivityByAccount } from './txns.js';
+import { billRowHTML, payBill, openBillSheet, getBillDueDay, computeRealAvailable, wireBillRows } from './bills.js';
 import { renderInsightsCard } from './insights.js';
-import { addForm } from './add.js';                 // NEW(v2.4)
+import { resetAddForm } from './add.js';           // NEW(v2.4)
 import { renderPaceCard } from './pace.js';         // NEW(v2.6)
-import { openBudgetsSheet } from './budgets.js';    // NEW(v2.7.1)
+import { openBudgetsSheet, budgetSpentMap } from './budgets.js'; // NEW(v2.7.1)
 import { renderGoalsCard } from './goals.js'; // NEW(v2.0)
+import { preferredAccountFor } from './merchants.js'; // NEW(v3.0)
+
+/* NEW(v3.0): how an account's balance reads on Home. The old row stripped
+   every minus sign — an overdrawn checking account (−$50) showed as $50, and
+   a card carrying a CREDIT showed as money owed. Now:
+     cash:  $1,234.00   /  −$50.00 (red, overdrawn)
+     debt:  −$612.40 owed (amber)  /  +$20.00 credit (green) */
+export function acctBalanceHTML(a, bal){
+  const isDebt = a.type === 'Credit Card' || a.type === 'Loan';
+  if (isDebt){
+    if (bal < -0.004) return `<span class="pos">+${fmt(-bal)} credit</span>`;
+    return `−${fmt(bal).replace('−','')}`;
+  }
+  return bal < -0.004 ? `<span class="neg">${fmt(bal)}</span>` : fmt(bal);
+}
 
 /* ── NEW(v2.9.2): swipe left/right on Home to change month ──────────────
    The picker sheet stays for jumping far; a swipe handles the constant
@@ -188,10 +203,10 @@ export function renderHome(){
               <div class="acct-bullet ${cls}"></div>
               <div style="min-width:0;">
                 <div class="acct-name">${esc(a.name)}</div>
-                <div class="acct-meta">${a.type}</div>
+                <div class="acct-meta">${esc(a.type)}</div>
               </div>
             </div>
-            <div class="acct-bal ${isDebt ? 'cc' : ''}">${isDebt ? '−' : ''}${fmt(b).replace('−','')}</div>
+            <div class="acct-bal ${isDebt ? 'cc' : ''}">${acctBalanceHTML(a, b)}</div>
           </div>
         `;
       }).join('')}
@@ -212,16 +227,7 @@ export function renderHome(){
     const cats = topCategories(type);
     if (!cats.length){ navigate('add'); return; } // nothing logged yet — plain Add
     openPicker(`${type} — pick a category`, cats, null, (category) => {
-      Object.assign(addForm, {
-        type,
-        date: today(),
-        account: usualAccount(type, category),
-        category,
-        description: '',
-        amount: '',
-        fromAccount: null,
-        editingId: null
-      });
+      resetAddForm({ type, category, account: usualAccount(type, category) });
       closeSheet();
       navigate('add');
       requestAnimationFrame(() => { const a = $('#f-amount'); if (a){ a.focus(); } });
@@ -231,11 +237,11 @@ export function renderHome(){
   // NEW(v2.9.2): recent transactions — tap to view/edit without leaving Home.
   $$('.txn', v).forEach(el => el.addEventListener('click', () => openTxnSheet(el.dataset.id)));
 
-  // NEW(v2.9.2): tap an account row → Activity pre-filtered to that account.
+  // NEW(v2.9.2): tap an account row → Activity filtered to that account.
+  // FIX(v3.0): an exact account filter, not a text search — searching
+  // "Card" also matched "Gift Card" descriptions and any name containing it.
   $$('.acct-row[data-acct]', v).forEach(el => el.addEventListener('click', () => {
-    txnFilters.search = el.dataset.acct;
-    txnFilters.type = 'all';
-    resetRenderCap();
+    filterActivityByAccount(el.dataset.acct);
     navigate('txns');
   }));
 
@@ -253,10 +259,14 @@ export function renderHome(){
   $('#ra-config', v)?.addEventListener('click', openRealAvailSheet); // NEW(v2.7)
   $$('[data-go-budgets]', v).forEach(r => r.addEventListener('click', openBudgetsSheet)); // NEW(v2.7.1)
   $('#see-all-bills', v)?.addEventListener('click', () => navigate('bills'));
-  $$('.bill-pay-btn', v).forEach(b => b.addEventListener('click', (e) => {
+  // FIX(v3.0): the check circle pays the bill, same as on the Bills tab (this
+  // wired a `.bill-pay-btn` class that no row has ever had, so a tap fell
+  // through to the row and opened the editor instead).
+  $$('.bill-check', v).forEach(b => b.addEventListener('click', (e) => {
     e.stopPropagation();
     payBill(b.dataset.id);
   }));
+  wireBillRows(v); // NEW(v3.0): "Looks paid · Link"
   $$('.bill-row[data-bill-id]', v).forEach(el => el.addEventListener('click', () => openBillSheet(el.dataset.billId)));
 
   $('#migrate-skip', v)?.addEventListener('click', async () => {
@@ -287,7 +297,7 @@ async function openMigrationSheet(candidates){
           <div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
             <div style="min-width:0;flex:1;">
               <div style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.category||'Refund')}${t.description ? ' · '+esc(t.description) : ''}</div>
-              <div class="muted" style="font-size:11px;margin-top:2px;">${t.date} · ${esc(t.account)}</div>
+              <div class="muted" style="font-size:11px;margin-top:2px;">${esc(t.date)} · ${esc(t.account)}</div>
             </div>
             <div class="mono" style="color:var(--green);flex-shrink:0;">+$${t.amount.toFixed(2)}</div>
           </div>
@@ -322,20 +332,12 @@ async function openMigrationSheet(candidates){
 }
 
 function renderBudgetsCard(year, month){
-  const ym = `${year}-${String(month).padStart(2,'0')}`;
   const mAbbr = monthAbbr[month-1];
   const budgets = state.budgets.filter(b => b.year === year);
   if (!budgets.length) return '';
 
-  // FIX(v1.2): budget usage accumulates in cents.
-  const spent = {};
-  for (const t of state.transactions){
-    if (!t.date || monthKey(t.date) !== ym) continue;
-    if (!['Expense','Income','Investment'].includes(t.type)) continue;
-    const k = `${t.type}|${t.category}`;
-    spent[k] = (spent[k]||0) + toCents(t.amount);
-  }
-  for (const k of Object.keys(spent)) spent[k] = fromCents(spent[k]);
+  // FIX(v3.0): shared definition — refunds net back into their category.
+  const spent = budgetSpentMap(year, month);
 
   const rows = budgets
     .map(b => ({ b, target: b.amounts[mAbbr] || 0, used: spent[`${b.type}|${b.category}`] || 0 }))
@@ -455,9 +457,14 @@ function topCategories(type, limit = 8){
   return ranked.concat(configured).slice(0, Math.max(limit, ranked.length));
 }
 
-// Your usual account for this type+category pairing; falls back to the
-// usual account for the type overall, then null (Add form defaults apply).
+// Your usual account for this type+category pairing. NEW(v3.0): an explicit
+// category rule (e.g. Restaurants → Citi) or a clear recent habit wins; then
+// the all-time usual account for the pairing, then for the type, then null
+// (Add form defaults apply).
 function usualAccount(type, category){
+  const valid = state.accounts.filter(a => a.active).map(a => a.name);
+  const pref = preferredAccountFor(type, category, valid);
+  if (pref) return pref.account;
   const count = (filter) => {
     const m = {};
     for (const t of state.transactions){

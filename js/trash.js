@@ -7,16 +7,15 @@
    older than 30 days are purged on app start.
 
    Notes:
-   - Restoring re-runs cascadeForChange so balances heal correctly.
-   - If the deleted txn was a bill's auto-logged payment, the bill's
-     paid flag was cleared on delete; restoring does NOT re-link it
-     (the bill simply shows unpaid again — re-tap Pay if needed).
+   - Balances are derived (v3.0), so a restore needs no balance repair.
+   - The delete toast's Undo re-links a bill payment; restoring later from
+     this sheet does not (the bill shows unpaid — Bills offers "Looks paid ·
+     Link" for it).
    ============================================================ */
 
-import { $, $$, fmt, toast, esc } from './util.js';
+import { $, $$, fmt, toast, esc, busyGuard } from './util.js';
 import { state, dbAll, dbPut, dbDel } from './db.js';
 import { openSheet } from './sheet.js';
-import { cascadeForChange } from './balances.js';
 import { invalidateMerchantCache } from './merchants.js';
 
 const RETENTION_DAYS = 30;
@@ -33,9 +32,8 @@ export async function restoreTxn(trashed){
   const { deletedAt, ...txn } = trashed;
   await dbDel('trash', trashed.id);
   await dbPut('transactions', txn);
-  state.transactions.push(txn);
+  if (!state.transactions.some(t => t.id === txn.id)) state.transactions.push(txn);
   state.transactions.sort((a,b) => (b.date||'').localeCompare(a.date||''));
-  await cascadeForChange(null, txn);
   invalidateMerchantCache();
   return txn;
 }
@@ -68,12 +66,12 @@ export async function openTrashSheet(onChanged){
             <div class="rec-row">
               <div style="min-width:0;flex:1;">
                 <div style="font-size:13.5px;font-weight:500;">${esc(t.category || t.type)} · ${fmt(t.amount || 0)}</div>
-                <div class="muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${t.date || '—'} · ${esc(t.account || '')}${t.description ? ' · ' + esc(t.description) : ''}</div>
+                <div class="muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.date || '—')} · ${esc(t.account || '')}${t.description ? ' · ' + esc(t.description) : ''}</div>
                 <div class="muted small" style="margin-top:2px;font-size:10.5px;">Deleted ${ago}</div>
               </div>
               <div style="display:flex;gap:6px;flex-shrink:0;">
-                <button class="btn secondary tr-restore" data-id="${t.id}" style="width:auto;padding:8px 12px;font-size:12px;">Restore</button>
-                <button class="btn danger tr-kill" data-id="${t.id}" style="width:auto;padding:8px 10px;font-size:12px;">×</button>
+                <button class="btn secondary tr-restore" data-id="${esc(t.id)}" style="width:auto;padding:8px 12px;font-size:12px;">Restore</button>
+                <button class="btn danger tr-kill" data-id="${esc(t.id)}" style="width:auto;padding:8px 10px;font-size:12px;">×</button>
               </div>
             </div>
           `;
@@ -83,14 +81,14 @@ export async function openTrashSheet(onChanged){
   `;
   openSheet();
 
-  $$('.tr-restore').forEach(b => b.addEventListener('click', async () => {
+  $$('.tr-restore').forEach(b => b.addEventListener('click', busyGuard(async () => {
     const item = items.find(x => x.id === b.dataset.id);
     if (!item) return;
     await restoreTxn(item);
     toast('Restored');
     if (typeof onChanged === 'function') onChanged();
     openTrashSheet(onChanged);
-  }));
+  })));
   $$('.tr-kill').forEach(b => b.addEventListener('click', async () => {
     if (!confirm('Delete forever? This cannot be undone.')) return;
     await dbDel('trash', b.dataset.id);
