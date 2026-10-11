@@ -448,10 +448,13 @@ export const unpayBill = busyGuard(async (billId) => {
 /* FIX(v1.2): the bill editor is driven by a form-state object (no native
    <select>s — they misbehave in standalone PWA mode on Samsung Internet). */
 export function openBillSheet(billId){
-  const accts = state.accounts.filter(a => a.active);
+  const existing = billId ? state.bills.find(b => b.id === billId) : null;
+  // FIX(v3.1): a bill pointing at a CLOSED account kept being re-pointed to
+  // the first open account on save. Its own accounts stay on offer.
+  const own = existing ? [existing.account, existing.fromAccount, existing.linkedAccount] : [];
+  const accts = state.accounts.filter(a => a.active || own.includes(a.name));
   const checking = accts.filter(a => a.type === 'Checking');
   const ccAccts = accts.filter(a => a.type === 'Credit Card');
-  const existing = billId ? state.bills.find(b => b.id === billId) : null;
   const todayIso = today();
 
   // Mutable form state — survives re-renders triggered by pickers.

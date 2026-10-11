@@ -20,7 +20,7 @@
      can be rolled back.
    ============================================================ */
 
-import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, uid, toast, esc, round2, fmt, busyGuard, downloadBlob, currentYm } from './util.js';
+import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, uid, toast, esc, round2, fmt, busyGuard, downloadBlob, currentYm, JSON_ACCEPT } from './util.js';
 import { state, STORES, dbPut, dbDel, dbClear, replaceAllData, loadState, saveFlags, exportData, saveSnapshot, listSnapshots } from './db.js';
 import { invalidateMerchantCache, categoryRuleKey } from './merchants.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
@@ -695,8 +695,9 @@ async function applyBackup(data, reason){
 export function restoreJSON(onRestored){
   const input = document.createElement('input');
   input.type = 'file';
-  // No `accept` filter: Android greys out files whose MIME type it can't
-  // map (Drive downloads, uppercase extensions) — validate after reading.
+  // Broad filter incl. octet-stream — Drive downloads and uppercase
+  // extensions report unknown types (see util.js JSON_ACCEPT).
+  input.accept = JSON_ACCEPT;
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;

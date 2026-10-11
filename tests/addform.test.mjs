@@ -52,7 +52,9 @@ await click($('#f-cat'));
 await pick('Groceries'); await tick(40);
 check('explicit rule wins over 40 txns of habit', addForm.account === 'Dining Card', addForm.account);
 
-// A manual pick is never overridden, and offers "Always use…".
+// A manual pick is never overridden, and (when no rule exists yet) offers
+// "Always use…". v3.1: overriding an existing rule is a one-off — no prompt.
+state.flags.categoryAccounts = {};
 await click($('#f-acct'));
 await pick('Everyday Card'); await tick(40);
 check('manual pick sticks', addForm.account === 'Everyday Card');

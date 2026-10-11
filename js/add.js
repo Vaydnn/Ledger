@@ -55,6 +55,16 @@ export function resetAddForm(over = {}){
   Object.assign(addForm, BLANK, { date: today() }, over);
 }
 
+// v3.1: closed / deleted accounts (offered only while editing their own
+// transactions) are labeled so it's clear why they appear.
+function acctStatus(name){
+  if (!name) return '';
+  const a = state.accounts.find(x => x.name === name);
+  return !a ? 'deleted' : (a.active ? '' : 'closed');
+}
+const pickerOpt = (a) => { const s = acctStatus(a.name); return s ? { value: a.name, note: s } : a.name; };
+const closedTag = (name) => { const s = acctStatus(name); return s ? ` <span class="picker-note">${s}</span>` : ''; };
+
 // Apply the category's default account unless the user chose one already.
 function applyCategoryDefault(acctOptions){
   if (addForm.accountTouched || !addForm.category) return;
@@ -97,6 +107,20 @@ export function renderAdd(){
   if (addForm.type === 'CC Payment') fromOptions = checking;
   if (addForm.type === 'Loan Payment') fromOptions = checking;
   if (addForm.type === 'Balance Transfer') fromOptions = ccs.filter(a => a.name !== addForm.account);
+
+  // FIX(v3.1): editing a transaction on a CLOSED (or deleted) account. Only
+  // open accounts are offered, so the form used to silently swap the
+  // account for your most-used one — and Save wrote it. The record's own
+  // accounts are always offered while editing it (same type).
+  const original = addForm.editingId ? state.transactions.find(t => t.id === addForm.editingId) : null;
+  if (original && original.type === addForm.type){
+    const keep = (list, name) => {
+      if (!name || list.find(a => a.name === name)) return list;
+      return [...list, state.accounts.find(a => a.name === name) || { name, type: '', active: false, missing: true }];
+    };
+    acctOptions = keep(acctOptions, original.account);
+    if (fromOptions.length || original.fromAccount) fromOptions = keep(fromOptions, original.fromAccount);
+  }
 
   if (!addForm.category || !catList.includes(addForm.category)){
     addForm.category = catList[0] || null;
@@ -198,7 +222,7 @@ export function renderAdd(){
     <div class="field">
       <label>${accountLabel}</label>
       <button class="input picker-btn" id="f-acct" type="button">
-        <span class="picker-val">${esc(addForm.account || '—')}</span>
+        <span class="picker-val">${esc(addForm.account || '—')}${closedTag(addForm.account)}</span>
         <span class="picker-chev">▾</span>
       </button>
       ${acctHint}
@@ -208,7 +232,7 @@ export function renderAdd(){
       <div class="field">
         <label>${fromLabel}</label>
         <button class="input picker-btn" id="f-from" type="button">
-          <span class="picker-val">${esc(addForm.fromAccount || '—')}</span>
+          <span class="picker-val">${esc(addForm.fromAccount || '—')}${closedTag(addForm.fromAccount)}</span>
           <span class="picker-chev">▾</span>
         </button>
       </div>
@@ -249,7 +273,7 @@ export function renderAdd(){
     closeSheet();
     setCategory(val);
   }));
-  $('#f-acct', v).addEventListener('click', () => openPicker(accountLabel, acctOptions.map(a => a.name), addForm.account, (val) => {
+  $('#f-acct', v).addEventListener('click', () => openPicker(accountLabel, acctOptions.map(pickerOpt), addForm.account, (val) => {
     closeSheet();
     const auto = addForm.account;
     addForm.account = val;
@@ -257,7 +281,7 @@ export function renderAdd(){
     renderAdd();
     offerCategoryRule(val, auto);
   }));
-  if ($('#f-from', v)) $('#f-from', v).addEventListener('click', () => openPicker(fromLabel, fromOptions.map(a => a.name), addForm.fromAccount, (val) => {
+  if ($('#f-from', v)) $('#f-from', v).addEventListener('click', () => openPicker(fromLabel, fromOptions.map(pickerOpt), addForm.fromAccount, (val) => {
     closeSheet();
     addForm.fromAccount = val;
     renderAdd();
@@ -333,10 +357,19 @@ export function renderAdd(){
 
 // NEW(v3.0): the user overrode the account the form picked. If it's a
 // category we can remember, offer to make it the rule.
+// FIX(v3.1): asked at most ONCE per category, and never when a rule
+// already exists (overriding a rule is a deliberate one-off). A category
+// genuinely split between two cards used to get the prompt on every pick.
+// Rules stay editable in More → Categories.
 function offerCategoryRule(picked, previous){
   const { type, category } = addForm;
   if (!category || !['Expense','Income','Refund'].includes(type)) return;
-  if (picked === previous || categoryRule(type, category) === picked) return;
+  if (picked === previous || categoryRule(type, category)) return;
+  const key = categoryRuleKey(type, category);
+  const asked = state.flags.categoryRuleAsked || {};
+  if (asked[key]) return;
+  state.flags.categoryRuleAsked = { ...asked, [key]: Date.now() };
+  saveFlags().catch(e => console.warn('saving prompt state failed', e));
   toastAction(`Always use ${picked} for ${category}?`, 'Always', async () => {
     state.flags.categoryAccounts = { ...(state.flags.categoryAccounts || {}), [categoryRuleKey(type, category)]: picked };
     await saveFlags();

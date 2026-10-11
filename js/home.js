@@ -24,11 +24,12 @@ import { preferredAccountFor } from './merchants.js'; // NEW(v3.0)
    every minus sign — an overdrawn checking account (−$50) showed as $50, and
    a card carrying a CREDIT showed as money owed. Now:
      cash:  $1,234.00   /  −$50.00 (red, overdrawn)
-     debt:  −$612.40 owed (amber)  /  +$20.00 credit (green) */
+     debt:  −$612.40 owed (amber)  /  +$20.00 credit (green)  /  $0.00 (paid off) */
 export function acctBalanceHTML(a, bal){
   const isDebt = a.type === 'Credit Card' || a.type === 'Loan';
   if (isDebt){
     if (bal < -0.004) return `<span class="pos">+${fmt(-bal)} credit</span>`;
+    if (bal < 0.005) return fmt(0);   // FIX(v3.1): was "−$0.00"
     return `−${fmt(bal).replace('−','')}`;
   }
   return bal < -0.004 ? `<span class="neg">${fmt(bal)}</span>` : fmt(bal);

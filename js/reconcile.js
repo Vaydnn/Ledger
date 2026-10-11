@@ -31,7 +31,7 @@
      out Citi's uppercase ".CSV" downloads.
    ============================================================ */
 
-import { $, $$, fmt, toast, toastAction, esc, toCents, fromCents, round2, toLocalISO, daysBetween, sumMoney, uid, haptic, squash, busyGuard } from './util.js';
+import { $, $$, fmt, toast, toastAction, esc, toCents, fromCents, round2, toLocalISO, daysBetween, sumMoney, uid, haptic, squash, busyGuard, CSV_ACCEPT } from './util.js';
 import { state, dbPut, dbDel, saveFlags } from './db.js';
 import { acctTypeMap, txnEffectsCents } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
@@ -105,9 +105,12 @@ function renderSetup(options){
 function pickFile(){
   const input = document.createElement('input');
   input.type = 'file';
-  // FIX(v3.0): no `accept` filter. Android maps extensions to MIME types
-  // case-sensitively, so Citi's "Date range.CSV" downloads were greyed out
-  // in the picker. Anything is selectable; the parser validates instead.
+  // FIX(v3.0→3.1): Android maps extensions to MIME types case-sensitively,
+  // so with accept=".csv" Citi's "Date range.CSV" was greyed out. v3.0 dropped
+  // the filter entirely — which made Android offer Camera / Sound recorder
+  // too. The broad list includes octet-stream (what unknown/uppercase files
+  // report), so every statement stays selectable; the parser validates.
+  input.accept = CSV_ACCEPT;
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;

@@ -80,7 +80,10 @@ pickerBtn.click(); await tick(40);
 $$('.picker-option').find(o => o.querySelector('span').textContent.trim() === 'Dining Card').click(); await tick(60);
 $('#rc-file').click(); await tick(500);
 
-check('file picker has no type filter (uppercase .CSV selectable on Android)', !acceptSeen);
+// v3.1: a broad filter — uppercase .CSV and unknown-type (octet-stream)
+// files stay selectable, without Android offering Camera/Recorder.
+check('file picker filter keeps uppercase .CSV + unknown types selectable',
+  /\.CSV/.test(acceptSeen) && /application\/octet-stream/.test(acceptSeen) && /text\/csv/.test(acceptSeen), acceptSeen);
 const stats = $$('.rec-stat .v').map(e => e.textContent.trim());
 check('8 matched, 5 statement-only, $0 fee skipped', parseInt(stats[0]) === 8 && parseInt(stats[1]) === 5, stats.join(' / '));
 const guesses = $$('.rc-guess').map(e => e.textContent);

@@ -128,6 +128,14 @@ export const currentYm = () => today().slice(0, 7);
 // become "burgerbarn". Used to compare merchant names across sources.
 export const squash = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+/* NEW(v3.1): file-picker filters. Android greys out files whose MIME type
+   it can't map — uppercase ".CSV", Drive downloads — and with NO filter it
+   offers Camera / Sound recorder instead of going straight to Files. These
+   lists cover both: real types plus application/octet-stream (what unknown
+   files report). Every reader validates the content anyway. */
+export const CSV_ACCEPT = '.csv,.CSV,text/csv,text/comma-separated-values,application/csv,application/vnd.ms-excel,text/plain,application/octet-stream';
+export const JSON_ACCEPT = '.json,.JSON,application/json,text/json,text/plain,application/octet-stream';
+
 /* NEW(v3.0): double-tap guard. Wraps an async action so a second tap while
    the first is still saving is ignored — a laggy Save or Pay used to log the
    same transaction twice. keyFn scopes the lock (e.g. per bill id). */

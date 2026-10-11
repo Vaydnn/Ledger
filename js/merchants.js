@@ -130,10 +130,17 @@ export function lookupMerchant(description){
    and refund descriptions ("Refund: Amazon"). Compares letters+digits only:
    the name may START WITH a known merchant ("joescoffeesometown" →
    "joe's coffee") or a known merchant may start with it. Longest
-   overlap wins, then frequency. Returns null under 4 matching characters. */
+   overlap wins, then frequency. Returns null under 4 matching characters.
+   FIX(v3.1): tighter — a SHORT known merchant (<6 letters) must end on a
+   word break of the name ("PIZZA HUT" → "Pizza" ok, "PIZZAHUT" no), and a
+   name that's only the START of a longer merchant must cover ≥75% of it
+   ("TARGET" no longer matches "Target Optical"). */
+const words = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 export function findMerchantFuzzy(name, { requireExpense = false } = {}){
-  const q = squash(merchantCore(name));
+  const core = merchantCore(name);
+  const q = squash(core);
   if (q.length < 4) return null;
+  const qWords = words(core);
   let best = null, bestLen = 0;
   for (const m of getTable()){
     if (requireExpense && !m.expenseCategory) continue;
@@ -141,8 +148,12 @@ export function findMerchantFuzzy(name, { requireExpense = false } = {}){
     if (k.length < 4) continue;
     let len = 0;
     if (q === k) len = k.length + 1000;          // exact beats any prefix
-    else if (q.startsWith(k)) len = k.length;
-    else if (k.startsWith(q) && q.length >= 5) len = q.length;
+    else if (q.startsWith(k)){
+      const kWords = words(m.key);
+      const atWordBreak = qWords === kWords || qWords.startsWith(kWords + ' ');
+      if (k.length >= 6 || atWordBreak) len = k.length;
+    }
+    else if (k.startsWith(q) && q.length >= 5 && q.length / k.length >= 0.75) len = q.length;
     if (!len) continue;
     if (len > bestLen || (len === bestLen && m.count > best.count)){ best = m; bestLen = len; }
   }

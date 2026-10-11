@@ -186,8 +186,11 @@ function sheetTransform(off){
 // and for pickers inside Budgets / Balances sheets. Native <select> popups
 // can misbehave in standalone PWA mode on Samsung Internet on foldables —
 // a sheet-based picker is more reliable and friendlier to tap on.
+// Options are strings, or (v3.1) { value, label?, note? } — `note` renders as
+// a muted tag after the label (e.g. "closed" on a closed account).
 export function openPicker(title, options, current, onSelect){
-  const opts = (options || []).filter(o => o != null && o !== '');
+  const opts = (options || []).filter(o => o != null && o !== '')
+    .map(o => typeof o === 'object' ? { value: o.value, label: o.label ?? o.value, note: o.note || '' } : { value: o, label: o, note: '' });
   // FIX(v2.10.2): titles can carry user/CSV strings (e.g. Reconcile passes a
   // statement description) — escape like everything else that hits innerHTML.
   $('#sheetBody').innerHTML = `
@@ -199,10 +202,10 @@ export function openPicker(title, options, current, onSelect){
             // FIX(v1.2): options are user-entered names — fully escape for both
             // the attribute and the visible label (entities decode back to the
             // original string when read via dataset.v).
-            const v = esc(o);
-            const isCur = o === current;
-            return `<button class="picker-option ${isCur?'selected':''}" data-v="${v}">
-              <span>${esc(o)}</span>
+            const isCur = o.value === current;
+            return `<button class="picker-option ${isCur?'selected':''}" data-v="${esc(o.value)}">
+              <span>${esc(o.label)}</span>
+              ${o.note ? `<span class="picker-note">${esc(o.note)}</span>` : ''}
               ${isCur ? '<span class="picker-check">✓</span>' : ''}
             </button>`;
           }).join('')}
