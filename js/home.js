@@ -10,16 +10,17 @@ import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alp
 import { state, dbPut, saveFlags } from './db.js';
 import { balanceAt, monthTotals } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
-import { navigate } from './app.js';
+import { navigate, renderAll } from './app.js';
 import { txnHTML, openTxnSheet, filterActivityByAccount } from './txns.js';
 import { billRowHTML, payBill, openBillSheet, getBillDueDay, computeRealAvailable, wireBillRows } from './bills.js';
 import { renderInsightsCard } from './insights.js';
-import { resetAddForm } from './add.js';           // NEW(v2.4)
+import { resetAddForm, logAgain } from './add.js'; // NEW(v2.4)
 import { renderPaceCard } from './pace.js';         // NEW(v2.6)
 import { openBudgetsSheet, budgetSpentMap } from './budgets.js'; // NEW(v2.7.1)
 import { renderGoalsCard } from './goals.js'; // NEW(v2.0)
 import { preferredAccountFor } from './merchants.js'; // NEW(v3.0)
 import { renderSafeCard, wireSafeCard } from './payday.js'; // NEW(v3.1)
+import { renderRecurringCard, wireRecurringCard } from './recurring.js'; // NEW(v3.1)
 
 /* NEW(v3.0): how an account's balance reads on Home. The old row stripped
    every minus sign — an overdrawn checking account (−$50) showed as $50, and
@@ -42,6 +43,7 @@ export function acctBalanceHTML(a, bal){
    you only glance at keeps what matters above the fold. Stored in
    flags.homeLayout = { order, hidden, collapsed }. */
 export const HOME_CARDS = [
+  ['recurring', 'Usually charged now'],
   ['quicklog', 'Quick log'], ['pace', 'Month-End Pace'], ['safe', 'Safe to spend'], ['real', 'Real available'],
   ['insights', 'Insights'], ['recent', 'Recent'], ['bills', 'Upcoming Bills'],
   ['debt', 'Debt Total'], ['accounts', 'Accounts'], ['budgets', 'Budgets'], ['goals', 'Savings Goals']
@@ -178,6 +180,7 @@ export function renderHome(){
     quicklog: renderQuickLog(),
     pace: renderPaceCard(),
     safe: isCurrentMonth ? renderSafeCard() : '',   // NEW(v3.1): a right-now number
+    recurring: isCurrentMonth ? renderRecurringCard() : '',   // NEW(v3.1): only when something's due
     real: `
     <div class="real-card">
       <div class="real-head">
@@ -336,6 +339,7 @@ export function renderHome(){
   $('#go-bills', v)?.addEventListener('click', () => navigate('bills'));
   $('#ra-config', v)?.addEventListener('click', openRealAvailSheet); // NEW(v2.7)
   wireSafeCard(v, renderHome);                                         // NEW(v3.1)
+  wireRecurringCard(v, { rerender: renderAll, logAgain });             // NEW(v3.1)
   $$('[data-go-budgets]', v).forEach(r => r.addEventListener('click', openBudgetsSheet)); // NEW(v2.7.1)
   $('#see-all-bills', v)?.addEventListener('click', () => navigate('bills'));
   // FIX(v3.0): the check circle pays the bill, same as on the Bills tab (this

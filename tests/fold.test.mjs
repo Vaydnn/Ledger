@@ -238,7 +238,7 @@ app.navigate('txns'); await tick(40);
   app.navigate('more'); app.navigate('home'); await tick(30);
   check('…across re-renders', $('.home-card[data-card="accounts"]').classList.contains('collapsed'));
   await click($('#home-customize'), 40);
-  check('Customize Home sheet lists every card', $$('.hc-row').length === 11);
+  check('Customize Home sheet lists every card', $$('.hc-row').length === 12);
   await click($('.hc-up[data-k="accounts"]'), 60);
   const o = order();
   check('↑ moves a card up', o.indexOf('accounts') < o.indexOf('debt'), o.join(','));

@@ -349,5 +349,57 @@ const { txnFilters } = await import('../js/txns.js');
   app.navigate('home'); await tick(20);
 }
 
+/* ── 31. Recurring prompts ── */
+const rec = await import('../js/recurring.js');
+{
+  // Same day of the month, the last 4 months → due today.
+  const now = new Date();
+  const monthsAgo = (k, dayShift = 0) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - k, 1);
+    d.setDate(Math.min(now.getDate() + dayShift, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+    return util.toLocalISO(d);
+  };
+  for (let k = 1; k <= 4; k++) await dbPut('transactions', txn({ date: monthsAgo(k), type:'Expense', account:'Card', category:'Streaming', amount: 15.49, description:'Streamflix', tags:['subs'] }));
+  // Weekly coffee — regular, but too frequent to prompt for.
+  for (let k = 1; k <= 8; k++) await dbPut('transactions', txn({ date: D(-7 * k), type:'Expense', account:'Card', category:'Restaurants', amount: 5, description:'Corner Coffee' }));
+  await loadState(); await tick(30);
+
+  const ps = rec.recurringPrompts(T);
+  const sf = ps.find(p => p.label === 'Streamflix');
+  check('a monthly charge due today is prompted', !!sf && sf.due === T && sf.late === 0, JSON.stringify(ps.map(p => [p.label, p.due])));
+  check('weekly habits aren\'t', !ps.some(p => p.label === 'Corner Coffee'));
+  check('category-level patterns aren\'t (merchants only)', ps.every(p => p.key.startsWith('m:')));
+  check('still prompted 3 days late, not 4', rec.recurringPrompts(D(3)).some(p => p.label === 'Streamflix') && !rec.recurringPrompts(D(4)).some(p => p.label === 'Streamflix'));
+  check('not before it\'s due', !rec.recurringPrompts(D(-1)).some(p => p.label === 'Streamflix'));
+
+  app.navigate('home'); app.renderAll(); await tick(40);
+  const card = () => $('#view-home .home-card[data-card="recurring"]');
+  check('Home shows "Usually charged around now" at the top', !!card() && /Streamflix/.test(card().textContent) && /\$15\.49/.test(card().textContent) && /due today/.test(card().textContent)
+    && $('#view-home .home-card').dataset.card === 'recurring');
+
+  const before = state.transactions.length;
+  await click($('#view-home .recur-log'), 120);
+  const logged = state.transactions.find(t => t.description === 'Streamflix' && t.date === T);
+  check('"Log it" logs it like last time, dated when due', state.transactions.length === before + 1 && logged && logged.amount === 15.49 && logged.account === 'Card' && logged.category === 'Streaming' && JSON.stringify(logged.tags) === '["subs"]');
+  check('…and the prompt goes away', !card());
+  await click($('#toast-act'), 120);
+  check('Undo removes it and the prompt is back', !state.transactions.some(t => t.id === logged.id) && !!card());
+
+  await click($('#view-home .recur-edit'), 60);
+  check('"Edit first" opens Add with it filled in', state.view === 'add' && add.addForm.description === 'Streamflix' && add.addForm.amount === '15.49' && add.addForm.date === T && !add.addForm.editingId);
+  add.resetAddForm(); app.navigate('home'); await tick(30);
+
+  await click($('#view-home .recur-skip'), 60);
+  check('"Not now" hides it until the next charge', !card() && state.flags.recurDismissed[sf.key] === T);
+  state.flags.recurDismissed = {};
+  check('…which would prompt again', rec.recurringPrompts(T).some(p => p.label === 'Streamflix'));
+
+  await dbPut('bills', { id:'b-sf', name:'Streamflix', recurrence:'monthly', type:'Expense', account:'Card', category:'Streaming', amount: 15.49, dueDay: now.getDate(), active:true, paidMonths:{} });
+  await loadState();
+  check('a bill that covers it takes over (no double reminder)', !rec.recurringPrompts(T).some(p => p.label === 'Streamflix'));
+  await dbDel('bills', 'b-sf'); await loadState();
+  app.navigate('home'); await tick(20);
+}
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('everyday tests');

@@ -53,7 +53,8 @@ const CORE = [
   './js/lock.js',
   './js/appearance.js',
   './js/payday.js',
-  './js/tags.js'
+  './js/tags.js',
+  './js/recurring.js'
 ];
 
 self.addEventListener('install', (e) => {

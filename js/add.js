@@ -845,10 +845,12 @@ export function startEdit(txn){
 // NEW(v3.1): "Log again" — a new transaction like `txn` (type, accounts,
 // category, note, amount), dated today. A closed or deleted account isn't
 // carried over; the category's default account fills in instead.
-export function logAgain(txn){
+// `date` overrides today (a recurring prompt logs the day it was due).
+export function logAgain(txn, { date } = {}){
   const usable = (n) => !!n && state.accounts.some(a => a.name === n && a.active);
   const sp = txn.splitId ? splitFormFields(txn) : null;   // a split repeats as a split
   resetAddForm({
+    ...(date ? { date } : {}),
     type: txn.type, category: sp ? sp.category : txn.category,
     splits: sp ? sp.splits : null,
     account: usable(txn.account) ? txn.account : null,
