@@ -290,6 +290,7 @@ function txnDetailHTML(t){
       </div>
       <div style="font-size:14px;font-weight:500;">${esc(t.category || t.type)}</div>
       <div class="muted small" style="margin-top:6px;">${esc(t.type)} · ${esc(t.account)}${t.fromAccount ? ' (from '+esc(t.fromAccount)+')' : ''}</div>
+      ${t.cleared ? '<div class="small td-cleared">✓ Cleared — matched on a statement</div>' : ''}
       ${t.description ? `<div style="margin-top:10px;font-size:13.5px;">${esc(t.description)}</div>` : ''}
       ${(t.tags || []).length ? `<div class="td-tags">${t.tags.map(x => `<button type="button" class="tag on" data-show-tag="${esc(x)}">#${esc(x)}</button>`).join('')}</div>` : ''}
       ${splitDetailHTML(t)}
@@ -391,7 +392,7 @@ export function txnHTML(t){
     <div class="txn" data-id="${esc(t.id)}">
       <div class="txn-icon ${cls}">${sym}</div>
       <div class="txn-body">
-        <div class="txn-cat">${esc(t.category || t.type)}</div>
+        <div class="txn-cat">${esc(t.category || t.type)}${t.cleared ? ' <span class="clr" title="Cleared on a statement" aria-label="cleared">✓</span>' : ''}</div>
         <div class="txn-meta">${meta}</div>
       </div>
       <div class="txn-amt ${amtCls}">${amtCls==='pos'?'+':amtCls==='neg'?'−':''}$${t.amount.toFixed(2)}</div>

@@ -606,6 +606,9 @@ async function saveSplit(total){
     };
     if (addForm.tags.length) txn.tags = [...addForm.tags]; else delete txn.tags;
     delete txn.offsetCategory;
+    // v3.1: cleared on a statement as this total, date and account — not after changing them.
+    const was = old[i];
+    if (txn.cleared && (was.date !== txn.date || was.account !== txn.account || (was.splitTotal ?? was.amount) !== total)) delete txn.cleared;
     await dbPut('transactions', txn);
     const idx = state.transactions.findIndex(t => t.id === txn.id);
     if (idx >= 0) state.transactions[idx] = txn; else state.transactions.push(txn);
@@ -766,6 +769,9 @@ const saveTransaction = busyGuard(async () => {
     if (addForm.type === 'Refund' && addForm.offsetCategory) txn.offsetCategory = addForm.offsetCategory;
     else delete txn.offsetCategory;
     if (addForm.tags.length) txn.tags = [...addForm.tags]; else delete txn.tags;   // NEW(v3.1)
+    // NEW(v3.1): a cleared mark stands for what the statement showed.
+    if (existing?.cleared && (existing.amount !== txn.amount || existing.date !== txn.date ||
+        existing.account !== txn.account || (existing.fromAccount || null) !== (txn.fromAccount || null) || addForm.splitId)) delete txn.cleared;
     // NEW(v3.1): "Don't split" on an existing split — this part becomes the
     // whole transaction and the other parts go.
     if (addForm.splitId){

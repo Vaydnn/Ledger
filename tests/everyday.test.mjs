@@ -401,5 +401,62 @@ const rec = await import('../js/recurring.js');
   app.navigate('home'); await tick(20);
 }
 
+/* ── 32. Reconcile memory ── */
+const recon = await import('../js/reconcile.js');
+{
+  check('file kind = its header row', recon.fileSig('﻿Status,Date,Description,Debit,Credit\r\nCleared,10/01/2026,X,1.00,') === 'status,date,description,debit,credit');
+  check('…or the column count when there\'s no header', recon.fileSig('10/01/2026,X,1.00\n') === 'cols:3');
+
+  const a = txn({ date: D(-10), type:'Expense', account:'Card', category:'Groceries', amount: 12.34, description:'Market' });
+  const b = txn({ date: D(-9), type:'Expense', account:'Card', category:'Gas', amount: 56.78, description:'Fuel stop' });
+  await dbPut('transactions', a); await dbPut('transactions', b); await loadState();
+  const us = (iso) => `${iso.slice(5, 7)}/${iso.slice(8)}/${iso.slice(0, 4)}`;
+  const citi = `Status,Date,Description,Debit,Credit\nCleared,${us(D(-10))},MARKET 123,12.34,\nCleared,${us(D(-9))},FUEL STOP 9,56.78,\n`;
+
+  // First time: the account is picked by hand.
+  recon.openReconcileWithFile('Date range.CSV', citi); await tick(30);
+  await click($('#rc-acct'), 30); await pick('Card'); await tick(30);
+  await click($('#rc-rerun'), 200);
+  check('the results know this account', /Reconcile · Card/.test($('#sheetBody h2').textContent));
+  check('…and remember it for this kind of file', state.flags.reconcileMemory?.bySig['status,date,description,debit,credit'] === 'Card');
+  check('matched entries can be marked cleared', !!$('#rc-clear') && /Mark 2 matched as cleared/.test($('#rc-clear').textContent));
+  await click($('#rc-clear'), 200);
+  check('marking clears exactly the matched ones', state.transactions.find(t => t.id === a.id).cleared === true && state.transactions.find(t => t.id === b.id).cleared === true
+    && state.transactions.filter(t => t.cleared).length === 2);
+  check('…and records "reconciled through" the statement\'s last date', recon.reconciledThrough('Card') === D(-9) && /reconciled through/.test($('#sheetBody .rc-through')?.textContent || ''));
+  closeSheet(); await tick(20);
+
+  // Next time: the same kind of file picks Card by itself.
+  recon.openReconcileSheet(); await tick(20);
+  await click($('#rc-acct'), 30); await pick('Checking'); await tick(20);   // left on another account
+  closeSheet(); await tick(20);
+  recon.openReconcileWithFile('Date range (2).CSV', citi); await tick(30);
+  check('a file of a known kind opens on its account', $('#rc-acct .picker-val').textContent === 'Card' && /remembered/.test($('#sheetBody').textContent));
+  check('setup shows how far it\'s reconciled', /Reconciled through/.test($('#rc-through').textContent));
+  await click($('#rc-acct'), 30);
+  check('…the account list too', $$('.picker-option').some(o => /Card/.test(o.textContent) && /thru/.test(o.textContent)));
+  await pick('Card'); await tick(20);
+  closeSheet(); await tick(20);
+
+  // Activity shows the marks; edits that change what the statement showed remove them.
+  app.navigate('txns'); await tick(40);
+  const rowA = $$('#view-txns .txn').find(el => el.dataset.id === a.id);
+  check('Activity marks cleared transactions ✓', !!rowA?.querySelector('.clr'));
+  openTxnSheet(a.id); await tick(30);
+  check('…and the detail says so', /Cleared — matched on a statement/.test($('#sheetBody').textContent));
+  closeSheet(); await tick(20);
+  add.startEdit(state.transactions.find(t => t.id === a.id)); await tick(30);
+  add.addForm.description = 'Market (weekly)';
+  await click($('#f-save'), 120);
+  check('editing only the note keeps the mark', state.transactions.find(t => t.id === a.id).cleared === true);
+  add.startEdit(state.transactions.find(t => t.id === a.id)); await tick(30);
+  add.addForm.amount = '13.34';
+  await click($('#f-save'), 120);
+  check('changing the amount removes it', !state.transactions.find(t => t.id === a.id).cleared);
+  // It's about your accounts, not this phone — a restore on a new phone keeps it.
+  check('reconcile memory travels with backups', (await import('../js/db.js')).exportData().flags.reconcileMemory?.through?.Card === D(-9));
+  app.navigate('home'); await tick(20);
+}
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('everyday tests');

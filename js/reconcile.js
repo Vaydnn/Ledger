@@ -45,14 +45,38 @@ const recState = {
   window: 3,          // ± days date tolerance
   flipSigns: false,   // user override for charge-sign detection
   rows: null,         // parsed CSV rows
-  fileName: ''
+  fileName: '',
+  sig: null,          // NEW(v3.1): the file's header — which kind of statement it is
+  accountPicked: false,      // the account was chosen by hand this time
+  rememberedAccount: false   // …or came from reconcile memory
 };
+
+/* ── NEW(v3.1): reconcile memory (item 32) ──────────────────────────────
+   flags.reconcileMemory = {
+     bySig:   { '<csv header>': account }   — this kind of file goes with that account
+     through: { account: 'YYYY-MM-DD' }     — reconciled through (latest statement date marked)
+   }
+   Matched transactions can be marked cleared (t.cleared = true); an edit
+   that changes what the statement showed clears the mark again (add.js). */
+const recMem = () => ({ bySig: {}, through: {}, ...(state.flags.reconcileMemory || {}) });
+async function saveRecMem(m){ state.flags.reconcileMemory = m; await saveFlags(); }
+export function reconciledThrough(account){ return recMem().through[account] || null; }
+const longDate = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+// The header row identifies the bank's export format. A first line that's
+// already data (no header) falls back to its column count.
+export function fileSig(text){
+  const first = String(text || '').replace(/^﻿/, '').split(/\r?\n/).find(l => l.trim()) || '';
+  if (/\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/.test(first)) return 'cols:' + first.split(',').length;
+  return first.split(',').map(c => c.trim().replace(/^"|"$/g, '').toLowerCase()).join(',');
+}
 
 export function openReconcileSheet(){
   const debts = state.accounts.filter(a => a.active && (a.type === 'Credit Card' || a.type === 'Loan'));
   const all = state.accounts.filter(a => a.active);
   const options = [...debts, ...all.filter(a => !debts.includes(a))]; // debt accounts first
   if (!options.length){ toast('No accounts to reconcile'); return; }
+  recState.accountPicked = false;
   if (!recState.account || !options.find(a => a.name === recState.account)){
     // FIX(v2.9.1): default to the busiest account (no personal names in code).
     const usage = {};
@@ -77,6 +101,7 @@ function renderSetup(options){
         <span class="picker-val">${esc(recState.account)}</span>
         <span class="picker-chev">▾</span>
       </button>
+      <div class="field-hint" id="rc-through">${reconciledThrough(recState.account) ? `✓ Reconciled through ${esc(longDate(reconciledThrough(recState.account)))}` : 'Not reconciled yet'}</div>
     </div>
     <div class="field">
       <label>Date tolerance</label>
@@ -89,8 +114,12 @@ function renderSetup(options){
   `;
 
   $('#rc-acct').addEventListener('click', () => {
-    openPicker('Account', options.map(a => a.name), recState.account, (val) => {
+    const through = recMem().through;
+    const opts = options.map(a => through[a.name] ? { value: a.name, note: 'thru ' + through[a.name].slice(5).replace('-', '/') } : a.name);
+    openPicker('Account', opts, recState.account, (val) => {
       recState.account = val;
+      recState.accountPicked = true;
+      recState.rememberedAccount = false;
       renderSetup(options);
     });
   });
@@ -127,6 +156,15 @@ function loadStatement(name, text){
     recState.rows = rows;
     recState.fileName = name;
     recState.flipSigns = false;
+    // NEW(v3.1): this kind of file was reconciled against an account before.
+    recState.sig = fileSig(text);
+    const remembered = recMem().bySig[recState.sig];
+    recState.rememberedAccount = false;
+    if (remembered && !recState.accountPicked && remembered !== recState.account &&
+        state.accounts.some(a => a.name === remembered && a.active)){
+      recState.account = remembered;
+      recState.rememberedAccount = true;
+    }
     return true;
   } catch(e){
     console.error(e);
@@ -139,12 +177,14 @@ function loadStatement(name, text){
    The file is already here, so the sheet opens on the account step with
    one button to run it. */
 export function openReconcileWithFile(name, text){
+  recState.accountPicked = false;
   if (!loadStatement(name, text)) return false;
   openReconcileSheet();
   const notice = document.createElement('div');
   notice.className = 'debt-good';
   notice.style.marginBottom = '12px';
-  notice.textContent = `Shared: ${name} (${recState.rows.length} rows). Check the account, then Reconcile.`;
+  notice.textContent = `Shared: ${name} (${recState.rows.length} rows). ` +
+    (recState.rememberedAccount ? `Account remembered for this kind of file — tap Reconcile.` : `Check the account, then Reconcile.`);
   $('#sheetBody h2')?.after(notice);
   const run = $('#rc-rerun');
   if (run){ run.textContent = `Reconcile ${name}`; run.classList.remove('secondary'); }
@@ -644,10 +684,22 @@ function renderResults(){
   const totalsClean = Math.abs(totals.diff) < 0.005;
   const inlineRows = csvOnly.filter(r => guesses.get(r).kind === 'inline');
 
+  // NEW(v3.1): this kind of file → this account, next time.
+  const mem = recMem();
+  if (recState.sig && mem.bySig[recState.sig] !== recState.account){
+    saveRecMem({ ...mem, bySig: { ...mem.bySig, [recState.sig]: recState.account } }).catch(e => console.warn('Reconcile memory', e));
+  }
+  // Matched entries (every part of a split) and whether they're all cleared.
+  const matchedTxns = [...matched, ...loose].flatMap(m => m.txn.parts || [m.txn]);
+  const unclearedN = matchedTxns.filter(t => !t.cleared).length;
+  const through = reconciledThrough(recState.account);
+  const throughDone = !unclearedN && through && through >= to;
+
   $('#sheetBody').innerHTML = `
     <h2>Reconcile · ${esc(recState.account)}</h2>
     <div class="muted small" style="margin-bottom:10px;">
       ${esc(recState.fileName)} · ${recState.rows.length} statement rows · ledger ${from} → ${to} · ±${recState.window}d
+      ${recState.rememberedAccount ? '<br>Account remembered for this kind of file.' : ''}
     </div>
 
     <div class="rec-stats">
@@ -664,6 +716,10 @@ function renderResults(){
     </div>
 
     ${clean ? `<div class="debt-good" style="margin-bottom:12px;">✓ Fully reconciled — every statement row has a ledger match.</div>` : ''}
+
+    ${matchedTxns.length ? (throughDone
+      ? `<div class="muted small rc-through" style="margin-bottom:12px;">✓ ${esc(recState.account)} reconciled through ${esc(longDate(through))} · matched entries marked cleared</div>`
+      : `<button class="btn secondary" id="rc-clear" style="margin-bottom:12px;">✓ Mark ${unclearedN || matchedTxns.length} matched as cleared · through ${esc(longDate(to))}</button>`) : ''}
 
     ${csvOnly.length || ledgerOnly.length ? `<div class="rc-pair">
     <div class="rc-col">
@@ -849,4 +905,20 @@ function renderResults(){
     renderResults();
   });
   $('#rc-back').addEventListener('click', () => renderSetup(options));
+  // NEW(v3.1): cleared marks + reconciled-through date.
+  $('#rc-clear')?.addEventListener('click', busyGuard(async () => {
+    let n = 0;
+    for (const t of matchedTxns){
+      if (t.cleared) continue;
+      t.cleared = true;
+      await dbPut('transactions', t);
+      n++;
+    }
+    const m = recMem();
+    const prev = m.through[recState.account];
+    await saveRecMem({ ...m, through: { ...m.through, [recState.account]: prev && prev > to ? prev : to } });
+    haptic(15);
+    toast(`${n} marked cleared · ${recState.account} reconciled through ${longDate(to)}`);
+    renderResults();
+  }));
 }
