@@ -17,13 +17,21 @@ import { invalidateMerchantCache } from './merchants.js';
 const MONTHS = { 30: 1, 60: 2, 91: 3, 365: 12 };
 const GRACE_DAYS = 3;
 
-// Next charge on the calendar: same day of the month (clamped), N months on.
-function nextCharge(last, canon){
-  const m = MONTHS[canon];
-  const d = new Date(last.getFullYear(), last.getMonth() + m, 1);
+// Next charge on the calendar, N months on, on the series' usual day of the
+// month (clamped to short months). The usual day, not the last charge's:
+// a 31st-of-the-month charge that landed on Sep 30 is due Oct 31, not Oct 30.
+export function nextCharge(last, canon, usualDay = last.getDate()){
+  const d = new Date(last.getFullYear(), last.getMonth() + MONTHS[canon], 1);
   const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  d.setDate(Math.min(last.getDate(), lastDay));
+  d.setDate(Math.min(usualDay, lastDay));
   return d;
+}
+// Most common day of the month in the series (ties → the later day, since
+// short months only ever pull a charge earlier).
+function usualDay(txns){
+  const n = {};
+  for (const t of txns) { const d = Number(t.date.slice(8, 10)); n[d] = (n[d] || 0) + 1; }
+  return Number(Object.entries(n).sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0]);
 }
 
 function coveredByBill(r){
@@ -38,12 +46,13 @@ export function recurringPrompts(todayIso = today()){
   for (const r of detectRecurring('Expense')){
     if (!r.key.startsWith('m:') || !MONTHS[r.canonDays]) continue;   // merchants on a monthly-or-longer rhythm
     if (coveredByBill(r)) continue;
-    const due = toLocalISO(nextCharge(r.last, r.canonDays));
+    const series = state.transactions.filter(t => r.txnIds.has(t.id) && t.date).sort((a, b) => b.date.localeCompare(a.date));
+    const latest = series[0];
+    if (!latest) continue;
+    const due = toLocalISO(nextCharge(r.last, r.canonDays, usualDay(series)));
     const late = daysBetween(due, todayIso);
     if (late < 0 || late > GRACE_DAYS) continue;
     if (dismissed[r.key] === due) continue;
-    const latest = state.transactions.filter(t => r.txnIds.has(t.id)).sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
-    if (!latest) continue;
     out.push({ key: r.key, label: r.label, due, late, txn: latest });
   }
   return out.sort((a, b) => b.late - a.late);

@@ -371,6 +371,9 @@ const rec = await import('../js/recurring.js');
   check('category-level patterns aren\'t (merchants only)', ps.every(p => p.key.startsWith('m:')));
   check('still prompted 3 days late, not 4', rec.recurringPrompts(D(3)).some(p => p.label === 'Streamflix') && !rec.recurringPrompts(D(4)).some(p => p.label === 'Streamflix'));
   check('not before it\'s due', !rec.recurringPrompts(D(-1)).some(p => p.label === 'Streamflix'));
+  const d = (iso) => new Date(iso + 'T00:00:00');
+  check('a 31st charge that fell on Sep 30 is due Oct 31 (usual day, not last day)', util.toLocalISO(rec.nextCharge(d('2026-09-30'), 30, 31)) === '2026-10-31');
+  check('…and Feb 28 in February', util.toLocalISO(rec.nextCharge(d('2027-01-31'), 30, 31)) === '2027-02-28');
 
   app.navigate('home'); app.renderAll(); await tick(40);
   const card = () => $('#view-home .home-card[data-card="recurring"]');
@@ -439,9 +442,11 @@ const recon = await import('../js/reconcile.js');
   closeSheet(); await tick(20);
 
   // Activity shows the marks; edits that change what the statement showed remove them.
+  txnFilters.month = 'all';                 // it's 10 days back — maybe last month
   app.navigate('txns'); await tick(40);
   const rowA = $$('#view-txns .txn').find(el => el.dataset.id === a.id);
   check('Activity marks cleared transactions ✓', !!rowA?.querySelector('.clr'));
+  txnFilters.month = 'current';
   openTxnSheet(a.id); await tick(30);
   check('…and the detail says so', /Cleared — matched on a statement/.test($('#sheetBody').textContent));
   closeSheet(); await tick(20);

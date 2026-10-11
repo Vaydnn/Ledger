@@ -245,7 +245,11 @@ app.navigate('txns'); await tick(40);
   await click($('.hc-vis[data-k="insights"]'), 60);
   check('hiding a card removes it from Home', !order().includes('insights') && state.flags.homeLayout.hidden.includes('insights'));
   await click($('#hc-reset'), 60);
-  check('reset restores everything', order().includes('insights') && !$('.home-card.collapsed') && order().join(',').startsWith('quicklog,pace,safe,real'));
+  // (Insights is un-hidden — it only renders when there's something to say,
+  // which on the 1st of a month there may not be.)
+  const { homeLayout } = await import('../js/home.js');
+  check('reset restores everything', !homeLayout().hidden.length && !homeLayout().collapsed.length && !$('.home-card.collapsed')
+    && order().join(',').startsWith('quicklog,pace,safe,real'), order().join(','));
   closeSheet(); await tick(30);
 }
 

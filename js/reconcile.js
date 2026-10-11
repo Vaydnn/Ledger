@@ -411,10 +411,13 @@ function buildContext(isCharge, rows){
   }
   const activeCash = state.accounts.filter(a => a.active && (a.type === 'Checking' || a.type === 'Savings')).map(a => a.name);
   const payFrom = Object.entries(from).filter(([n]) => activeCash.includes(n)).sort((a, b) => b[1] - a[1])[0]?.[0] || activeCash[0] || null;
-  // The account's usual category over the last 120 days, per type — the
-  // fallback for merchants we've never seen (a Restaurants card). Used when
-  // it's a clear front-runner: ≥30% of the account's entries.
-  const cutoff = toLocalISO(new Date(Date.now() - 120 * 86400000));
+  // The account's usual category over the 120 days up to the statement, per
+  // type — the fallback for merchants we've never seen (a Restaurants card).
+  // Used when it's a clear front-runner: ≥30% of the account's entries.
+  // v3.1: counted back from the statement's last date, not today — an older
+  // statement is guessed from the habits of its own time.
+  const stmtTo = rows.reduce((m, r) => (r.date > m ? r.date : m), '') || toLocalISO(new Date());
+  const cutoff = shiftISO(stmtTo, -120);
   const prior = {};
   for (const type of ['Expense', 'Income']){
     const counts = {}; let n = 0;
