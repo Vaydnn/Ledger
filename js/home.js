@@ -19,6 +19,7 @@ import { renderPaceCard } from './pace.js';         // NEW(v2.6)
 import { openBudgetsSheet, budgetSpentMap } from './budgets.js'; // NEW(v2.7.1)
 import { renderGoalsCard } from './goals.js'; // NEW(v2.0)
 import { preferredAccountFor } from './merchants.js'; // NEW(v3.0)
+import { renderSafeCard, wireSafeCard } from './payday.js'; // NEW(v3.1)
 
 /* NEW(v3.0): how an account's balance reads on Home. The old row stripped
    every minus sign — an overdrawn checking account (−$50) showed as $50, and
@@ -41,7 +42,7 @@ export function acctBalanceHTML(a, bal){
    you only glance at keeps what matters above the fold. Stored in
    flags.homeLayout = { order, hidden, collapsed }. */
 export const HOME_CARDS = [
-  ['quicklog', 'Quick log'], ['pace', 'Month-End Pace'], ['real', 'Real available'],
+  ['quicklog', 'Quick log'], ['pace', 'Month-End Pace'], ['safe', 'Safe to spend'], ['real', 'Real available'],
   ['insights', 'Insights'], ['recent', 'Recent'], ['bills', 'Upcoming Bills'],
   ['debt', 'Debt Total'], ['accounts', 'Accounts'], ['budgets', 'Budgets'], ['goals', 'Savings Goals']
 ];
@@ -167,6 +168,7 @@ export function renderHome(){
   const cards = {
     quicklog: renderQuickLog(),
     pace: renderPaceCard(),
+    safe: isCurrentMonth ? renderSafeCard() : '',   // NEW(v3.1): a right-now number
     real: `
     <div class="real-card">
       <div class="real-head">
@@ -313,6 +315,7 @@ export function renderHome(){
 
   $('#go-bills', v)?.addEventListener('click', () => navigate('bills'));
   $('#ra-config', v)?.addEventListener('click', openRealAvailSheet); // NEW(v2.7)
+  wireSafeCard(v, renderHome);                                         // NEW(v3.1)
   $$('[data-go-budgets]', v).forEach(r => r.addEventListener('click', openBudgetsSheet)); // NEW(v2.7.1)
   $('#see-all-bills', v)?.addEventListener('click', () => navigate('bills'));
   // FIX(v3.0): the check circle pays the bill, same as on the Bills tab (this

@@ -1242,11 +1242,12 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
 .card-title .card-fold{margin-left:8px;}
 .real-head .card-fold{align-self:flex-start;margin-left:4px;}
 .home-card.collapsed .card-fold{transform:rotate(-90deg);}
-.home-card.collapsed .card > :not(.card-title){display:none !important;}
+.home-card.collapsed .card > :not(.card-title):not(.real-head){display:none !important;}
 .home-card.collapsed .card .card-title{margin-bottom:0;}
 .home-card.collapsed .real-card > :not(.real-head){display:none !important;}
 .home-card.collapsed .real-head .sub, .home-card.collapsed .real-head .btn{display:none;}
 .home-customize{display:block;margin:18px auto 4px;}
+.safe-unit{font-family:"Geist",system-ui,sans-serif;font-size:15px;color:var(--text-3);margin-left:4px;letter-spacing:0;}
 
 /* Number pad (Add form) */
 .amt-calc{min-height:16px;font-family:"JetBrains Mono",monospace;font-size:12.5px;color:var(--ember-2);text-align:right;margin-top:4px;}

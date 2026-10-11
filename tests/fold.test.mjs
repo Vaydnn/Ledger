@@ -229,7 +229,7 @@ app.navigate('txns'); await tick(40);
   state.flags.homeLayout = undefined;
   app.navigate('home'); await tick(40);
   const order = () => $$('#view-home .home-card').map(s => s.dataset.card);
-  check('default order', order().join(',').startsWith('quicklog,pace,real'), order().join(','));
+  check('default order', order().join(',').startsWith('quicklog,pace,safe,real'), order().join(','));
   const fold = $('.home-card[data-card="accounts"] .card-fold');
   check('collapsible cards get a ⌄ button', !!fold && !$('.home-card[data-card="quicklog"] .card-fold'));
   await click(fold, 60);
@@ -238,14 +238,14 @@ app.navigate('txns'); await tick(40);
   app.navigate('more'); app.navigate('home'); await tick(30);
   check('…across re-renders', $('.home-card[data-card="accounts"]').classList.contains('collapsed'));
   await click($('#home-customize'), 40);
-  check('Customize Home sheet lists every card', $$('.hc-row').length === 10);
+  check('Customize Home sheet lists every card', $$('.hc-row').length === 11);
   await click($('.hc-up[data-k="accounts"]'), 60);
   const o = order();
   check('↑ moves a card up', o.indexOf('accounts') < o.indexOf('debt'), o.join(','));
   await click($('.hc-vis[data-k="insights"]'), 60);
   check('hiding a card removes it from Home', !order().includes('insights') && state.flags.homeLayout.hidden.includes('insights'));
   await click($('#hc-reset'), 60);
-  check('reset restores everything', order().includes('insights') && !$('.home-card.collapsed') && order().join(',').startsWith('quicklog,pace,real'));
+  check('reset restores everything', order().includes('insights') && !$('.home-card.collapsed') && order().join(',').startsWith('quicklog,pace,safe,real'));
   closeSheet(); await tick(30);
 }
 

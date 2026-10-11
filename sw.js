@@ -51,7 +51,8 @@ const CORE = [
   './js/reminders.js',
   './js/settings.js',
   './js/lock.js',
-  './js/appearance.js'
+  './js/appearance.js',
+  './js/payday.js'
 ];
 
 self.addEventListener('install', (e) => {

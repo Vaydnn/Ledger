@@ -91,7 +91,9 @@ function projectBillDates(dueDay, fromD, toD){
 }
 
 // Build the ordered event list for the forecast window
-function buildEvents(days){
+// v3.1: exported for Home's Safe to spend (payday.js). Each event carries
+// the account it hits (acct) so card double counts can be filtered.
+export function buildEvents(days){
   const todayD = new Date();
   todayD.setHours(0, 0, 0, 0);
   const endD = addDays(todayD, days); // FIX(v1.2): DST-safe
@@ -131,7 +133,7 @@ function buildEvents(days){
     const occs = projectOccurrences(r.last, r.canonDays, todayD, endD);
     for (const d of occs){
       events.push({
-        date:d, kind:'subscription', label:r.label, amount:-r.medAmt,
+        date:d, kind:'subscription', label:r.label, amount:-r.medAmt, acct:r.primaryAccount,
         detail:`${r.cadence} · ${r.category}${r.primaryAccount && !isCashAcct(r.primaryAccount) ? ' · ' + r.primaryAccount : ''}`
       });
     }
@@ -150,7 +152,7 @@ function buildEvents(days){
       const ymBill = toLocalISO(due).slice(0, 7);
       if (isBillPaid(b, ymBill)) continue;
       events.push({
-        date:due, kind:'bill', label:b.name, amount:-liveAmt,
+        date:due, kind:'bill', label:b.name, amount:-liveAmt, acct:b.linkedAccount, billId:b.id,
         detail:`Auto · ${b.linkedAccount}`
       });
       continue;
@@ -173,7 +175,7 @@ function buildEvents(days){
       // Skip bills already marked paid for the month they fall in
       if (b.recurrence !== 'once' && isBillPaid(b, toLocalISO(d).slice(0, 7))) continue;
       events.push({
-        date:d, kind:'bill', label:b.name, amount:-b.amount,
+        date:d, kind:'bill', label:b.name, amount:-b.amount, acct:b.account, billId:b.id,
         detail: b.recurrence === 'once' ? (parseLocalDate(b.dueDate) < todayD ? 'One-time bill · overdue' : 'One-time bill') : `Bill · due ${b.dueDay}`
       });
     }
