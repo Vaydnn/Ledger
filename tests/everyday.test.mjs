@@ -518,5 +518,53 @@ const stm = await import('../js/statement.js');
   await dbDel('bills', 'b-stm'); await loadState();
 }
 
+/* ── 34. More charts ── */
+const charts = await import('../js/charts.js');
+{
+  check('month windows cross the year boundary', charts.monthsBack(3, 2027, 1).map(p => p.ym).join() === '2026-11,2026-12,2027-01');
+  const { year: y, month: m } = state.selected;
+  const sp = charts.spendingByMonth(12, y, m);
+  check('spending by month: 12 months ending at the selected one', sp.length === 12 && sp[11].ym === `${y}-${String(m).padStart(2, '0')}` && sp[11].exp === monthTotals(y, m).exp);
+  const ym = `${y}-${String(m).padStart(2, '0')}`;
+  const groc = util.sumMoney(state.transactions.filter(t => t.type === 'Expense' && t.category === 'Groceries' && t.date?.startsWith(ym)), t => t.amount);
+  check('category trend: this month\'s Groceries matches the transactions', charts.categorySeries('Groceries', 12, y, m)[11].value === groc);
+  const tops = charts.topCategories(12, y, m);
+  check('top categories ordered by spend', tops.length > 2 && tops.includes('Groceries'));
+
+  // Net worth snapshots for the big chart.
+  for (const [k, d, c] of [[1, D(-400), 1000], [2, D(-150), 1500], [3, D(-20), 2100]]){
+    await dbPut('networth', { id: 'nw' + k, date: d, checking: c, savings: 0, investments: 0, ccDebt: 0, otherDebt: 0 });
+  }
+  await loadState();
+
+  app.navigate('more'); await tick(40);
+  check('More has Charts', !!$('#view-more .menu-item[data-act="charts"]'));
+  await click($('#view-more .menu-item[data-act="charts"]'), 60);
+  check('Charts opens on spending: 12 bars, this month highlighted, average line', $$('#ch-body .ch-bar').length === 12 && $$('#ch-body .ch-bar')[11].classList.contains('cur') && !!$('#ch-body .ch-avg'));
+  check('…opens as a wide dialog unfolded (sheet-wide)', $('#sheet').classList.contains('sheet-wide'));
+  await click($('#ch-span .seg-btn[data-v="6"]'), 40);
+  check('6 months → 6 bars', $$('#ch-body .ch-bar').length === 6);
+  const firstBar = $$('#ch-body .ch-bar')[0];
+  firstBar.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); await tick(20);
+  const p0 = charts.spendingByMonth(6, y, m)[0];
+  check('tapping a bar shows that month', $('#ch-cap').textContent.startsWith(util.monthName(p0.m)) && $$('#ch-body .ch-bar')[0].classList.contains('cur'));
+
+  await click($('#ch-tab .seg-btn[data-v="categories"]'), 40);
+  check('Categories: chips for your top categories', $$('.ch-cats .chip').length === tops.length && $('.ch-cats .chip[aria-pressed="true"]').dataset.cat === tops[0]);
+  await click($('.ch-cats .chip[data-cat="Groceries"]'), 40);
+  check('…picking one charts it', /Groceries per month/.test($('.ch-head').textContent) && $$('#ch-body .ch-bar').length === 6 && /vs avg/.test($('.ch-stats').textContent));
+
+  await click($('#ch-tab .seg-btn[data-v="networth"]'), 40);
+  check('Net worth: the 1Y range shows the last year\'s snapshots', $$('#ch-body .ch-dot').length === 2 && /\$2,100\.00/.test($('.ch-head').textContent));
+  await click($('#ch-nw .seg-btn[data-v="all"]'), 40);
+  check('…All shows every one', $$('#ch-body .ch-dot').length === 3 && /\+\$1,100\.00 since/.test($('#ch-body').textContent));
+  closeSheet(); await tick(20);
+  app.renderAll(); await tick(30);
+  await click($('#nw-big'), 60);
+  check('the Net Worth card opens the full chart', $('#ch-tab .seg-btn.active')?.dataset.v === 'networth');
+  closeSheet(); await tick(20);
+  app.navigate('home'); await tick(20);
+}
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('everyday tests');

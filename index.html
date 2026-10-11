@@ -1305,6 +1305,31 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
 /* Card statement vs current (Home accounts) */
 .stmt-due{color:var(--amber);}
 .stmt-paid{color:var(--green);}
+/* Charts (More → Charts) */
+.ch-body{margin-top:12px;}
+.ch-body > .seg{margin-bottom:12px;}
+.ch-head{display:flex;justify-content:space-between;align-items:baseline;margin:6px 0 8px;}
+.ch-head .l{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.16em;}
+.ch-head .v{font-family:"Instrument Serif",serif;font-size:30px;line-height:1;}
+.ch-svg{display:block;width:100%;height:auto;overflow:visible;}
+.ch-bar{fill:var(--bg-3);cursor:pointer;transition:fill .15s;}
+.ch-bar.cur{fill:var(--ember);}
+.ch-avg{stroke:var(--text-3);stroke-width:1.5;stroke-dasharray:6 5;}
+.ch-x,.ch-y{fill:var(--text-3);font-size:15px;font-family:"Geist",system-ui,sans-serif;}
+.ch-grid{stroke:var(--line);stroke-width:1;}
+.ch-path{fill:none;stroke:var(--ember);stroke-width:2.5;stroke-linejoin:round;}
+.ch-dot{fill:var(--ember);}
+.ch-cap{min-height:20px;margin-top:8px;font-size:13px;color:var(--text-2);text-align:center;}
+.ch-legend{display:flex;gap:8px;align-items:center;justify-content:center;margin-top:6px;font-size:11.5px;color:var(--text-3);}
+.ch-key{display:inline-block;width:14px;height:8px;border-radius:2px;margin-left:8px;}
+.ch-key.bar{background:var(--ember);}
+.ch-key.avg{height:0;border-top:2px dashed var(--text-3);border-radius:0;}
+.ch-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;}
+.ch-stats > div{background:var(--bg-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;}
+.ch-stats .l{font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.12em;}
+.ch-stats .v{font-size:16px;margin-top:4px;}
+.ch-stats .v.amber{color:var(--amber);}
+.ch-cats{margin-bottom:10px;}
 
 /* Reconcile: statement vs ledger side by side (unfolded) */
 .rc-side{min-width:0;flex:1;}

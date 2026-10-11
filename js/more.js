@@ -20,6 +20,7 @@ import { openGoalsSheet } from './goals.js';         // NEW(v2.0)
 import { openTrashSheet } from './trash.js';         // NEW(v2.0)
 import { openSettingsSheet } from './settings.js';   // NEW(v3.1)
 import { openTagsSheet } from './tags.js';           // NEW(v3.1)
+import { openChartsSheet } from './charts.js';       // NEW(v3.1)
 
 export function renderMore(){
   const v = $('#view-more');
@@ -37,6 +38,11 @@ export function renderMore(){
 
     <button class="menu-item" data-act="yearview">
       <span class="l"><span class="ico" style="color:var(--blue);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></span>Year View</span>
+      <span class="arrow">›</span>
+    </button>
+
+    <button class="menu-item" data-act="charts">
+      <span class="l"><span class="ico" style="color:var(--blue);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span>Charts</span>
       <span class="arrow">›</span>
     </button>
 
@@ -69,6 +75,7 @@ export function renderMore(){
       <h3 class="card-title">Net Worth</h3>
       ${renderNetWorthChart()}
       <button class="btn secondary" id="add-nw" style="margin-top:14px;">+ Add Snapshot</button>
+      ${state.netWorth.length ? '<button class="btn ghost" id="nw-big" style="margin-top:10px;">Full chart →</button>' : ''}
     </div>
 
     <button class="menu-item" data-act="budgets">
@@ -114,6 +121,7 @@ export function renderMore(){
     </div>
   `;
   $('#add-nw', v).addEventListener('click', () => openNetWorthSheet(renderMore));
+  $('#nw-big', v)?.addEventListener('click', () => openChartsSheet('networth'));   // NEW(v3.1)
   $$('.menu-item', v).forEach(b => b.addEventListener('click', () => moreAction(b.dataset.act)));
 }
 
@@ -135,6 +143,7 @@ function moreAction(act){
     case 'reset':       resetData(); break;
     case 'settings':    openSettingsSheet(); break;           // NEW(v3.1)
     case 'tags':        openTagsSheet(); break;               // NEW(v3.1)
+    case 'charts':      openChartsSheet(); break;             // NEW(v3.1)
     case 'about':       openAboutSheet(); break;
   }
 }
