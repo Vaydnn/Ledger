@@ -36,11 +36,12 @@
    fed the "On pace for $X" insight.
    ============================================================ */
 
-import { monthAbbr, toCents, fromCents, round2, addDays, parseLocalDate, squash } from './util.js';
+import { toCents, fromCents, round2, addDays, parseLocalDate, squash } from './util.js';
 import { state, dataVersion } from './db.js';
 import { monthTotals } from './effects.js';
 import { detectRecurring } from './subscriptions.js';
 import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid } from './bills.js';
+import { budgetMonth } from './budgets.js';   // NEW(v3.1): rollover targets
 
 // Bills that are spending (as opposed to paying down a card or loan).
 export const isExpenseBill = (b) => b.recurrence !== 'auto-cc' && (b.type || 'Expense') === 'Expense';
@@ -202,9 +203,10 @@ export function computePace(){
 
   /* ── budget comparison ── */
   let budgetTotal = 0;
+  const bCache = {};
   for (const b of state.budgets){
     if (b.year !== year || b.type !== 'Expense') continue;
-    budgetTotal += toCents((b.amounts || {})[monthAbbr[month-1]] || 0);
+    budgetTotal += toCents(budgetMonth(b, month, bCache).target);   // v3.1: includes rollover
   }
 
   const result = {

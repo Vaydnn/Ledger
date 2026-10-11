@@ -6,7 +6,7 @@
    insights (new in v1.1.0).
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alphaSort, sumMoney, toCents, fromCents, esc } from './util.js';
+import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, alphaSort, sumMoney, toCents, fromCents, esc } from './util.js';
 import { state, dbPut, saveFlags } from './db.js';
 import { balanceAt, monthTotals } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
@@ -16,7 +16,7 @@ import { billRowHTML, payBill, openBillSheet, getBillDueDay, computeRealAvailabl
 import { renderInsightsCard } from './insights.js';
 import { resetAddForm, logAgain } from './add.js'; // NEW(v2.4)
 import { renderPaceCard } from './pace.js';         // NEW(v2.6)
-import { openBudgetsSheet, budgetSpentMap } from './budgets.js'; // NEW(v2.7.1)
+import { openBudgetsSheet, budgetSpentMap, budgetMonth, leftPerDay } from './budgets.js'; // NEW(v2.7.1), v3.1
 import { renderGoalsCard } from './goals.js'; // NEW(v2.0)
 import { preferredAccountFor } from './merchants.js'; // NEW(v3.0)
 import { renderSafeCard, wireSafeCard } from './payday.js'; // NEW(v3.1)
@@ -427,15 +427,16 @@ async function openMigrationSheet(candidates){
 }
 
 function renderBudgetsCard(year, month){
-  const mAbbr = monthAbbr[month-1];
   const budgets = state.budgets.filter(b => b.year === year);
   if (!budgets.length) return '';
 
   // FIX(v3.0): shared definition — refunds net back into their category.
   const spent = budgetSpentMap(year, month);
 
+  // v3.1: targets include rollover (budgets.js budgetMonth).
+  const cache = { [month]: spent };
   const rows = budgets
-    .map(b => ({ b, target: b.amounts[mAbbr] || 0, used: spent[`${b.type}|${b.category}`] || 0 }))
+    .map(b => { const bm = budgetMonth(b, month, cache); return { b, target: bm.target, carry: bm.carry, used: spent[`${b.type}|${b.category}`] || 0 }; })
     .filter(r => r.target > 0 || r.used > 0)
     .sort((a, b) => (b.used / Math.max(b.target,1)) - (a.used / Math.max(a.target,1)));
 
@@ -464,11 +465,13 @@ function renderBudgetsCard(year, month){
         const pct = clamp(r.used / r.target, 0, 1.5);
         const cls = pct >= 1 ? 'over' : pct >= 0.8 ? 'warn' : '';
         const remaining = r.target - r.used;
+        // NEW(v3.1): this month, an expense budget also says what's left per day.
+        const perDay = r.b.type === 'Expense' && remaining > 0 ? leftPerDay(remaining, year, month) : null;
         return `
           <div class="bdg-row">
             <div class="bdg-head">
-              <div class="bdg-name">${esc(r.b.category)}</div>
-              <div class="bdg-nums"><b>${fmtShort(r.used)}</b> / ${fmtShort(r.target)} · ${remaining >= 0 ? fmtShort(remaining)+' left' : fmtShort(-remaining)+' over'}</div>
+              <div class="bdg-name">${esc(r.b.category)}${r.b.rollover && Math.abs(r.carry) >= 0.005 ? ` <span class="bdg-roll" title="Rolled over from earlier months">↻ ${r.carry > 0 ? '+' : '−'}${fmtShort(Math.abs(r.carry))}</span>` : ''}</div>
+              <div class="bdg-nums"><b>${fmtShort(r.used)}</b> / ${fmtShort(r.target)} · ${remaining >= 0 ? fmtShort(remaining)+' left' : fmtShort(-remaining)+' over'}${perDay != null ? ` · <span class="bdg-day">${fmt(perDay)}/day</span>` : ''}</div>
             </div>
             <div class="bar ${cls}"><i style="width:${Math.min(pct,1)*100}%"></i></div>
           </div>

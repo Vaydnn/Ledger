@@ -37,6 +37,32 @@ export function budgetSpentMap(year, monthIdx){
   return out;
 }
 
+/* NEW(v3.1): rollover budgets (item 35). With b.rollover on, whatever's left
+   of a month's budget — or overspent — carries into the next month. The
+   carry starts fresh each January (budgets are per year). Everything that
+   compares spending with a budget reads its target from here.
+   `cache` (month → budgetSpentMap) lets callers share the month scans. */
+export function budgetMonth(b, monthIdx, cache = {}){
+  const key = `${b.type}|${b.category}`;
+  const spentOf = (mi) => ((cache[mi] ||= budgetSpentMap(b.year, mi))[key] || 0);
+  const baseOf = (mi) => (b.amounts || {})[monthAbbr[mi - 1]] || 0;
+  let carryC = 0;
+  if (b.rollover){
+    for (let mi = 1; mi < monthIdx; mi++) carryC += toCents(baseOf(mi)) - toCents(spentOf(mi));
+  }
+  const base = baseOf(monthIdx), spent = spentOf(monthIdx);
+  const target = fromCents(toCents(base) + carryC);
+  return { base, carry: fromCents(carryC), target, spent, left: fromCents(toCents(target) - toCents(spent)) };
+}
+
+// NEW(v3.1): what's left per day for the rest of the month (today included);
+// null when (year, month) isn't the current month.
+export function leftPerDay(left, year, monthIdx, now = new Date()){
+  if (year !== now.getFullYear() || monthIdx !== now.getMonth() + 1) return null;
+  const days = new Date(year, monthIdx, 0).getDate() - now.getDate() + 1;
+  return left > 0 ? fromCents(Math.floor(toCents(left) / days)) : 0;
+}
+
 // FIX(v2.9.3): the new-budget form's state lives here, not in the DOM.
 // The Type/Category pickers replace #sheetBody while open, so the old
 // callbacks were writing the picked value onto a DETACHED form element and
@@ -67,8 +93,10 @@ function renderBudgetsSheet(){
 
   // FIX(v3.0): one shared definition (refunds net back into their category).
   const spent = {};
+  const spentCache = {};
   monthAbbr.forEach((m, i) => {
-    for (const [k, v] of Object.entries(budgetSpentMap(yr, i + 1))) spent[`${k}|${m}`] = v;
+    spentCache[i + 1] = budgetSpentMap(yr, i + 1);
+    for (const [k, v] of Object.entries(spentCache[i + 1])) spent[`${k}|${m}`] = v;
   });
 
   const listHTML = yearBudgets.length === 0 ? '' : `
@@ -83,7 +111,9 @@ function renderBudgetsSheet(){
     ${current ? `
       <div class="sb-list">
         ${monthAbbr.map((m, i) => {
-          const target = current.amounts[m] || 0;
+          const bm = budgetMonth(current, i + 1, spentCache);   // v3.1: target includes any rollover
+          const base = current.amounts[m] || 0;
+          const target = bm.target;
           const used = spent[`${current.type}|${current.category}|${m}`] || 0;
           const pct = target > 0 ? clamp(used / target, 0, 1.5) : 0;
           const barCls = pct >= 1 ? 'over' : pct >= 0.8 ? 'warn' : '';
@@ -93,9 +123,13 @@ function renderBudgetsSheet(){
               <div class="sb-month">${monthName(i+1, true)}</div>
               <div class="sb-field">
                 <label>Budget</label>
-                <input class="sb-input b-cell" data-id="${esc(current.id)}" data-m="${m}" data-midx="${i+1}" type="text" inputmode="decimal" value="${target.toFixed(2)}" />
+                <input class="sb-input b-cell" data-id="${esc(current.id)}" data-m="${m}" data-midx="${i+1}" type="text" inputmode="decimal" value="${base.toFixed(2)}" />
               </div>
               <div class="sb-calc">
+                ${current.rollover && Math.abs(bm.carry) >= 0.005 ? `<div class="sb-calc-row b-carry">
+                  <span>${bm.carry > 0 ? 'Rolled in' : 'Overspent before'}</span>
+                  <span class="mono ${bm.carry > 0 ? 'pos' : 'neg'}">${bm.carry > 0 ? '+' : '−'}$${Math.abs(bm.carry).toFixed(2)}</span>
+                </div>` : ''}
                 <div class="sb-calc-row">
                   <span>Used</span>
                   <span class="mono">${used === 0 ? '—' : '$' + used.toFixed(2)}</span>
@@ -110,6 +144,16 @@ function renderBudgetsSheet(){
           `;
         }).join('')}
       </div>
+
+      ${current.type === 'Expense' ? `
+        <div class="field" style="margin-top:12px;">
+          <label>Unused budget</label>
+          <div class="seg" id="b-rollover" role="tablist">
+            <button type="button" class="seg-btn ${current.rollover ? '' : 'active'}" data-v="off">Resets monthly</button>
+            <button type="button" class="seg-btn ${current.rollover ? 'active' : ''}" data-v="on">Rolls over</button>
+          </div>
+          <div class="muted small" style="margin-top:6px;line-height:1.5;">Rolls over: what's left (or overspent) carries into next month, starting fresh each January.</div>
+        </div>` : ''}
 
       <div style="display:flex;gap:8px;margin-top:12px;">
         <button class="btn ghost" id="b-fill-rest" style="flex:1;font-size:13px;padding:10px;">Fill forward from current month</button>
@@ -199,6 +243,14 @@ function renderBudgetsSheet(){
     });
     inp.addEventListener('focus', () => inp.select());
   });
+
+  // NEW(v3.1): rollover on/off
+  $$('#b-rollover .seg-btn').forEach(btn => btn.addEventListener('click', async () => {
+    if (!current) return;
+    if (btn.dataset.v === 'on') current.rollover = true; else delete current.rollover;
+    await dbPut('budgets', current);
+    renderBudgetsSheet();
+  }));
 
   // Fill forward
   $('#b-fill-rest')?.addEventListener('click', async () => {

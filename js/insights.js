@@ -16,13 +16,13 @@
    Tone: 'good' | 'warn' | 'neutral' — drives the card's color accent.
    ============================================================ */
 
-import { monthAbbr, monthKey, monthName, fmt, fmtShort, toCents, fromCents, daysBetween, esc } from './util.js';
+import { monthKey, monthName, fmt, fmtShort, toCents, fromCents, daysBetween, esc } from './util.js';
 import { state, dataVersion } from './db.js';
 import { monthTotals } from './effects.js';
 import { computePace } from './pace.js';                    // NEW(v2.8)
 import { detectRecurring } from './subscriptions.js';        // NEW(v2.8)
 import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid } from './bills.js'; // NEW(v2.8)
-import { budgetSpentMap } from './budgets.js';            // NEW(v3.0)
+import { budgetSpentMap, budgetMonth } from './budgets.js'; // NEW(v3.0), v3.1
 
 // Median of a numeric array
 function med(arr){
@@ -167,12 +167,12 @@ function detectEarlyBudgetBreach(year, monthIdx){
   if (now.getFullYear() !== year || now.getMonth() + 1 !== monthIdx) return [];
   const daysLeft = new Date(year, monthIdx, 0).getDate() - now.getDate();
   if (daysLeft < 5) return []; // late-month breaches are visible on the budget card anyway
-  const mAbbr = monthAbbr[monthIdx-1];
   const spentMap = budgetSpentMap(year, monthIdx); // FIX(v3.0): refunds net back in, same as the budget card
+  const cache = { [monthIdx]: spentMap };
   const out = [];
   for (const b of state.budgets){
     if (b.year !== year || b.type !== 'Expense') continue;
-    const target = (b.amounts || {})[mAbbr] || 0;
+    const target = budgetMonth(b, monthIdx, cache).target;   // v3.1: includes rollover
     if (target <= 0) continue;
     const used = spentMap[`Expense|${b.category}`] || 0;
     if (used > target) out.push({ category: b.category, used, target, daysLeft });

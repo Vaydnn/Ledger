@@ -566,5 +566,54 @@ const charts = await import('../js/charts.js');
   app.navigate('home'); await tick(20);
 }
 
+/* ── 35. Rollover budgets + budget left per day ── */
+const bud = await import('../js/budgets.js');
+{
+  // A past year, so "today" doesn't matter: $100/month for Utilities.
+  const amounts = Object.fromEntries(util.monthAbbr.map(m => [m, 100]));
+  const ub = { id:'bu1', year: 2025, type:'Expense', category:'Utilities', amounts: { ...amounts } };
+  await dbPut('budgets', ub);
+  await dbPut('transactions', txn({ date:'2025-01-12', type:'Expense', account:'Checking', category:'Utilities', amount: 60 }));    // 40 under
+  await dbPut('transactions', txn({ date:'2025-02-10', type:'Expense', account:'Checking', category:'Utilities', amount: 170 }));   // 70 over…
+  await dbPut('transactions', txn({ date:'2025-02-20', type:'Refund', account:'Checking', category:'Return', amount: 20, offsetCategory:'Utilities' }));  // …50 over net
+  await loadState();
+  const b = () => state.budgets.find(x => x.id === 'bu1');
+  check('without rollover every month is its own $100', bud.budgetMonth(b(), 3).target === 100 && bud.budgetMonth(b(), 3).carry === 0);
+  b().rollover = true;
+  check('rollover: January\'s $40 left carries into February ($140)', bud.budgetMonth(b(), 2).carry === 40 && bud.budgetMonth(b(), 2).target === 140);
+  check('…February\'s overspend (net of the refund) comes off March: 40 + (100 − 150) = −10 → $90',
+    bud.budgetMonth(b(), 3).carry === -10 && bud.budgetMonth(b(), 3).target === 90);
+  check('January starts fresh', bud.budgetMonth(b(), 1).carry === 0);
+  check('left per day: $300 with 10 days to go (incl. today) = $30/day', bud.leftPerDay(300, 2026, 9, new Date(2026, 8, 21)) === 30);
+  check('…$0 once overspent, none for other months', bud.leftPerDay(-5, 2026, 9, new Date(2026, 8, 21)) === 0 && bud.leftPerDay(300, 2026, 8, new Date(2026, 8, 21)) === null);
+
+  // Budgets sheet: the switch + rolled-over lines.
+  delete b().rollover; await dbPut('budgets', b());
+  state.selected.year = 2025; state.selected.month = 3;
+  bud.openBudgetsSheet(); await tick(30);
+  await click($('#b-pick'), 30); await pick('Utilities · Expense'); await tick(30);
+  check('an expense budget has a rollover switch (off)', $('#b-rollover .seg-btn.active')?.dataset.v === 'off' && !$('.b-carry'));
+  await click($('#b-rollover .seg-btn[data-v="on"]'), 60);
+  check('switching it on is saved', b().rollover === true && (await import('../js/db.js')).state.budgets.find(x => x.id === 'bu1').rollover === true);
+  const rows = $$('.budget-row');
+  check('February shows the $40 rolled in', /Rolled in\s*\+\$40\.00/.test(rows[1].textContent));
+  check('March shows the earlier overspend', /Overspent before\s*−\$10\.00/.test(rows[2].textContent));
+  check('the month inputs still edit the base amount', rows[2].querySelector('.b-cell').value === '100.00');
+  closeSheet(); await tick(20);
+  const now = new Date();
+  state.selected.year = now.getFullYear(); state.selected.month = now.getMonth() + 1;
+
+  // Home: this month's budget shows $/day left.
+  const thisYear = Object.fromEntries(util.monthAbbr.map(m => [m, 5000]));
+  await dbPut('budgets', { id:'bu2', year: now.getFullYear(), type:'Expense', category:'Groceries', amounts: thisYear, rollover: true });
+  await loadState();
+  app.navigate('home'); app.renderAll(); await tick(40);
+  const row = $$('#view-home .bdg-row').find(r => /Groceries/.test(r.textContent));
+  const bm = bud.budgetMonth(state.budgets.find(x => x.id === 'bu2'), now.getMonth() + 1);
+  check('Home budget rows show what\'s left per day', !!row && new RegExp(util.fmt(bud.leftPerDay(bm.left, now.getFullYear(), now.getMonth() + 1)).replace(/[$.]/g, '\\$&') + '/day').test(row.textContent), row?.textContent);
+  check('…and the rollover carried in (↻)', now.getMonth() === 0 || /↻/.test(row.textContent));
+  await dbDel('budgets', 'bu2'); await dbDel('budgets', 'bu1'); await loadState();
+}
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('everyday tests');
