@@ -19,6 +19,7 @@ import { openReconcileSheet } from './reconcile.js'; // NEW(v2.0)
 import { openGoalsSheet } from './goals.js';         // NEW(v2.0)
 import { openTrashSheet } from './trash.js';         // NEW(v2.0)
 import { openSettingsSheet } from './settings.js';   // NEW(v3.1)
+import { openTagsSheet } from './tags.js';           // NEW(v3.1)
 
 export function renderMore(){
   const v = $('#view-more');
@@ -51,6 +52,11 @@ export function renderMore(){
 
     <button class="menu-item" data-act="reconcile">
       <span class="l"><span class="ico" style="color:var(--green);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 11l3 3 8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg></span>Reconcile CSV</span>
+      <span class="arrow">›</span>
+    </button>
+
+    <button class="menu-item" data-act="tags">
+      <span class="l"><span class="ico" style="color:var(--ember-2);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12V4h8l10 10-8 8L3 12z"/><circle cx="7.5" cy="8.5" r="1.4"/></svg></span>Tags</span>
       <span class="arrow">›</span>
     </button>
 
@@ -128,6 +134,7 @@ function moreAction(act){
     case 'backup':      openBackupSheet(renderAll); break;    // NEW(v3.0): save / share / restore / roll back
     case 'reset':       resetData(); break;
     case 'settings':    openSettingsSheet(); break;           // NEW(v3.1)
+    case 'tags':        openTagsSheet(); break;               // NEW(v3.1)
     case 'about':       openAboutSheet(); break;
   }
 }

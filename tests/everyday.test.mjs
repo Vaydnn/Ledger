@@ -122,5 +122,232 @@ const pd = await import('../js/payday.js');
   closeSheet(); await tick(20);
 }
 
+/* ── 27. Log again ── */
+const add = await import('../js/add.js');
+const { openTxnSheet } = await import('../js/txns.js');
+{
+  const src = txn({ date: D(-6), type:'Expense', account:'Card', category:'Restaurants', amount: 23.5, description:'Taco place' });
+  await dbPut('transactions', src); await loadState(); await tick(30);
+  const before = state.transactions.length;
+  openTxnSheet(src.id); await tick(30);
+  check('the transaction sheet offers "Log again"', !!$('#sheetBody .td-again'));
+  await click($('#sheetBody .td-again'), 60);
+  check('Log again opens Add with everything but the date', state.view === 'add' && add.addForm.type === 'Expense' && add.addForm.account === 'Card'
+    && add.addForm.category === 'Restaurants' && add.addForm.description === 'Taco place' && add.addForm.amount === '23.5');
+  check('…dated today, as a new entry (not an edit)', add.addForm.date === T && !add.addForm.editingId && !$('#sheet').classList.contains('open'));
+  await click($('#f-save'), 120);
+  const copy = state.transactions.find(t => t.id !== src.id && t.description === 'Taco place');
+  check('saving makes a second transaction', state.transactions.length === before + 1 && copy && copy.date === T && copy.amount === 23.5 && copy.account === 'Card');
+  check('…and the original is untouched', state.transactions.find(t => t.id === src.id).date === D(-6));
+
+  await dbPut('accounts', { id:'a9', name:'Old Card', type:'Credit Card', active:false, order:9 });
+  await loadState();
+  add.logAgain({ type:'Expense', account:'Old Card', category:'Groceries', amount: 4, description:'' }); await tick(30);
+  check('a closed account isn\'t carried over', add.addForm.account !== 'Old Card' && !add.addForm.accountTouched);
+  add.resetAddForm(); app.navigate('home'); await tick(30);
+}
+
+/* ── 28. Recently added on Home ── */
+{
+  const legacy = { id:'legacy1', date: D(-100), type:'Expense', account:'Checking', category:'Gas', amount: 30, description:'', updatedAt: 1000 };
+  await dbPut('transactions', legacy);
+  check('a pre-3.1 record keeps its last-write time as when it was added', legacy.createdAt === 1000 && legacy.updatedAt > 1000);
+  const fresh = txn({ date: T, type:'Expense', account:'Checking', category:'Gas', amount: 31 });
+  await dbPut('transactions', fresh);
+  check('new records are stamped when first written', fresh.createdAt > 1000 && fresh.createdAt <= Date.now());
+  const createdBefore = fresh.createdAt;
+  fresh.amount = 32; await dbPut('transactions', fresh);
+  check('…and keep that stamp through edits', fresh.createdAt === createdBefore);
+  await loadState();
+
+  // A backdated receipt, entered now.
+  add.resetAddForm({ type:'Expense', date: D(-40), account:'Checking', category:'Groceries', amount:'7', description:'Backdated receipt' });
+  app.navigate('add'); await tick(40);
+  await click($('#f-save'), 120);
+  app.navigate('home'); await tick(40);
+  const recent = () => $$('#view-home .home-card[data-card="recent"] .txn').map(el => state.transactions.find(t => t.id === el.dataset.id));
+  check('Recent defaults to "Just added": the backdated receipt is first', recent()[0]?.description === 'Backdated receipt', recent().map(t => t?.description).join('|'));
+  check('…then the earlier entries, newest first', recent()[1]?.id === fresh.id);
+  await click($('#view-home [data-rm="date"]'), 60);
+  check('"By date" switches to the latest dates (saved)', state.flags.recentMode === 'date' && !recent().some(t => t.description === 'Backdated receipt') && recent()[0].date === T);
+  check('…and the chip shows it', $('#view-home [data-rm="date"]').getAttribute('aria-pressed') === 'true');
+  await click($('#view-home [data-rm="added"]'), 60);
+  check('back to "Just added"', state.flags.recentMode === 'added' && recent()[0]?.description === 'Backdated receipt');
+}
+
+/* ── 29. Split transactions ── */
+const { balanceLatest, monthTotals } = await import('../js/effects.js');
+const { splitParts } = await import('../js/db.js');
+const { pick } = domHelpers(dom);
+{
+  const cardBefore = balanceLatest('Card B');
+  const expBefore = monthTotals(new Date().getFullYear(), new Date().getMonth() + 1).exp;
+  add.resetAddForm({ type:'Expense', account:'Card B', category:'Groceries', amount:'80', description:'Big store run' });
+  app.navigate('add'); await tick(40);
+  check('Expense offers "Split across categories"', !!$('#f-split'));
+  await click($('#f-split'), 40);
+  check('split mode: two parts, category field becomes "Split"', $$('.sp-row').length === 2 && /Split · 2 parts/.test($('.split-sum').textContent) && !$('#f-cat'));
+  type('.sp-amt[data-i="0"]', '50');
+  check('the blank part shows it takes the rest', /\$30\.00 → the blank part/.test($('#sp-left').textContent));
+  await click($$('.sp-cat')[1], 30); await pick('Restaurants'); await tick(30);
+  check('each part picks its own category', add.addForm.splits[1].category === 'Restaurants' && $$('.sp-row').length === 2);
+  type('.sp-amt[data-i="1"]', '40');
+  check('over the total is flagged live', /Over by \$10\.00/.test($('#sp-left').textContent));
+  const n0 = state.transactions.length;
+  await click($('#f-save'), 100);
+  check('…and refused on save', state.transactions.length === n0 && /over the total/.test($('#toast').textContent));
+  type('.sp-amt[data-i="1"]', '');
+  await click($('#f-save'), 150);
+  const parts = state.transactions.filter(t => t.description === 'Big store run');
+  const sid = parts[0]?.splitId;
+  check('saved as one transaction per part, sharing a split id', parts.length === 2 && sid && parts.every(p => p.splitId === sid && p.splitTotal === 80));
+  check('parts: Groceries $50 + Restaurants $30 (the rest)', JSON.stringify(splitParts(sid).map(p => [p.category, p.amount])) === JSON.stringify([['Groceries', 50], ['Restaurants', 30]]));
+  check('same date / account / note on every part', parts.every(p => p.date === T && p.account === 'Card B' && p.description === 'Big store run'));
+  check('the card moves by the full $80', util.round2(balanceLatest('Card B') - cardBefore) === 80);
+  check('monthly expenses count it once ($80)', util.round2(monthTotals(new Date().getFullYear(), new Date().getMonth() + 1).exp - expBefore) === 80);
+
+  // Activity + detail.
+  app.navigate('txns'); await tick(60);
+  const row = $$('#view-txns .txn').find(el => el.dataset.id === splitParts(sid)[1].id);
+  check('Activity marks split parts', !!row && /split/.test(row.textContent));
+  openTxnSheet(splitParts(sid)[1].id); await tick(30);
+  check('a part\'s detail lists the whole split', /Split · \$80\.00 in 2 parts/.test($('#sheetBody').textContent) && /Groceries/.test($('.td-split').textContent) && $('.td-edit').textContent === 'Edit split');
+
+  // Edit: the whole split loads; change a part, add a third.
+  await click($('.td-edit'), 60);
+  check('Edit loads the total and every part', add.addForm.amount === '80' && add.addForm.splits.length === 2 && add.addForm.splitId === sid && add.addForm.editingId === splitParts(sid)[0].id);
+  type('.sp-amt[data-i="0"]', '40');
+  await click($('#sp-add'), 40);
+  type('.sp-amt[data-i="1"]', '30');
+  check('a new part slots in with an unused category', $$('.sp-row').length === 3 && add.addForm.splits[2].category !== 'Groceries' && add.addForm.splits[2].category !== 'Restaurants');
+  const keepIds = splitParts(sid).map(p => p.id);
+  await click($('#f-save'), 150);
+  const p3 = splitParts(sid);
+  check('edit: 3 parts $40 / $30 / $10, existing ids kept', p3.length === 3 && p3.map(p => p.amount).join() === '40,30,10' && p3[0].id === keepIds[0] && p3[1].id === keepIds[1]);
+  check('…still $80 on the card', util.round2(balanceLatest('Card B') - cardBefore) === 80);
+
+  // Remove a part while editing.
+  add.startEdit(p3[2]); await tick(40);
+  await click($$('.sp-del')[2], 40);
+  type('.sp-amt[data-i="1"]', '');
+  await click($('#f-save'), 150);
+  check('removing a part deletes it', splitParts(sid).length === 2 && splitParts(sid)[1].amount === 40 && !state.transactions.some(t => t.id === p3[2].id));
+
+  // Reconcile: the statement shows ONE $80 line.
+  const { openReconcileWithFile } = await import('../js/reconcile.js');
+  openReconcileWithFile('stmt.csv', `Date,Description,Amount\n${T},BIG STORE,80.00\n`); await tick(40);
+  await click($('#rc-acct'), 30); await pick('Card B'); await tick(30);
+  await click($('#rc-rerun'), 200);
+  check('Reconcile matches a split to its single statement line', /Fully reconciled/.test($('#sheetBody').textContent), $('#sheetBody').textContent.replace(/\s+/g, ' ').slice(0, 300));
+  closeSheet(); await tick(20);
+  const learned = Object.values(state.flags.stmtMerchants || {}).map(e => e.c);
+  check('…without learning "A + B" as a category', !learned.some(c => / \+ /.test(c || '')));
+
+  // Log again repeats the split.
+  openTxnSheet(splitParts(sid)[0].id); await tick(30);
+  await click($('#sheetBody .td-again'), 60);
+  check('Log again on a split starts a new split', add.addForm.splits?.length === 2 && !add.addForm.splitId && !add.addForm.editingId && add.addForm.amount === '80');
+  add.resetAddForm(); app.navigate('home'); await tick(30);
+
+  // Delete removes every part; Undo brings them all back.
+  openTxnSheet(splitParts(sid)[1].id); await tick(30);
+  await click($('#sheetBody .td-del'), 150);
+  check('deleting a part deletes the whole split', splitParts(sid).length === 0 && /Deleted split \(2 parts\)/.test($('#toast').textContent));
+  await click($('#toast-act'), 150);
+  check('Undo restores every part', splitParts(sid).length === 2 && util.round2(balanceLatest('Card B') - cardBefore) === 80);
+
+  // "Don't split" while editing → one transaction for the total.
+  add.startEdit(splitParts(sid)[0]); await tick(40);
+  await click($('#sp-off'), 40);
+  await click($('#f-save'), 150);
+  const merged = state.transactions.filter(t => t.description === 'Big store run');
+  check('"Don\'t split" turns it back into one $80 transaction', merged.length === 1 && merged[0].amount === 80 && !merged[0].splitId && merged[0].category === 'Groceries');
+
+  // Only Expense splits.
+  add.resetAddForm({ type:'Income', account:'Checking', category:'Salary', amount:'5' }); app.navigate('add'); await tick(30);
+  check('Income has no split option', !$('#f-split'));
+  add.resetAddForm(); app.navigate('home'); await tick(20);
+}
+
+/* ── 30. Tags ── */
+const tagsMod = await import('../js/tags.js');
+const { txnFilters } = await import('../js/txns.js');
+{
+  check('tag cleanup: case, #, punctuation, spaces → hyphen', tagsMod.normalizeTag('  #Beach Trip!! ') === 'beach-trip');
+  check('parseTags splits on commas/spaces, dedupes', JSON.stringify(tagsMod.parseTags('#trip, Work  trip')) === '["trip","work"]');
+
+  const key = (k) => new dom.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true });
+  add.resetAddForm({ type:'Expense', account:'Card', category:'Restaurants', amount:'60', description:'Beach dinner', date: D(-20) });
+  app.navigate('add'); await tick(40);
+  check('the Add form has a Tags field', !!$('#f-tag-input'));
+  $('#f-tag-input').value = '#Trip'; $('#f-tag-input').dispatchEvent(key('Enter')); await tick(20);
+  check('Enter adds a tag chip', JSON.stringify(add.addForm.tags) === '["trip"]' && !!$('#f-tags [data-del-tag="trip"]'));
+  type('#f-tag-input', 'drinks');                 // a word ending in "s" isn't a delimiter
+  await tick(20);
+  check('typing a word doesn\'t commit it early', JSON.stringify(add.addForm.tags) === '["trip"]' && $('#f-tag-input').value === 'drinks');
+  type('#f-tag-input', 'family,');                // Android keyboards: the comma arrives as input
+  await tick(20);
+  check('a comma adds one too', JSON.stringify(add.addForm.tags) === '["trip","family"]');
+  await click($('#f-tags [data-del-tag="family"]'), 20);
+  check('× removes it', JSON.stringify(add.addForm.tags) === '["trip"]');
+  $('#f-tag-input').value = 'beach';             // typed, not committed…
+  await click($('#f-save'), 120);
+  const dinner = state.transactions.find(t => t.description === 'Beach dinner');
+  check('…still saved with Save', JSON.stringify(dinner?.tags) === '["trip","beach"]');
+
+  // Suggestions + more tagged spending (a refund nets out).
+  add.resetAddForm({ type:'Expense', account:'Card', category:'Gas', amount:'40', description:'Fuel', date: D(-21) });
+  app.navigate('add'); await tick(40);
+  const sugg = $('#view-add [data-add-tag="trip"]');
+  check('used tags are suggested', !!sugg);
+  sugg.dispatchEvent(new dom.window.MouseEvent('mousedown', { bubbles: true, cancelable: true })); await tick(20);
+  await click($('#f-save'), 120);
+  add.resetAddForm({ type:'Refund', account:'Card', category:'Return', amount:'15', description:'Deposit back', date: D(-19), tags: ['trip'] });
+  app.navigate('add'); await tick(30);
+  await click($('#f-save'), 120);
+  check('saved tags', state.transactions.filter(t => (t.tags || []).includes('trip')).length === 3);
+
+  // Splits carry tags on every part; edit + log again keep them.
+  add.resetAddForm({ type:'Expense', account:'Card', category:'Groceries', amount:'30', description:'Trip snacks', date: D(-20), tags:['trip'] });
+  app.navigate('add'); await tick(30);
+  await click($('#f-split'), 30);
+  type('.sp-amt[data-i="0"]', '10');
+  await click($('#f-save'), 150);
+  const snack = state.transactions.filter(t => t.description === 'Trip snacks');
+  check('every part of a split gets the tags', snack.length === 2 && snack.every(t => JSON.stringify(t.tags) === '["trip"]'));
+  add.startEdit(dinner); await tick(30);
+  check('Edit keeps the tags', JSON.stringify(add.addForm.tags) === '["trip","beach"]');
+  add.logAgain(dinner); await tick(30);
+  check('Log again carries them', JSON.stringify(add.addForm.tags) === '["trip","beach"]');
+  add.resetAddForm(); app.navigate('home'); await tick(20);
+
+  // Activity: #search, totals, tag chips.
+  const rows = () => $$('#view-txns .txn').map(el => state.transactions.find(t => t.id === el.dataset.id));
+  txnFilters.month = 'all';
+  app.navigate('txns'); await tick(40);
+  type('#t-search', '#tr'); await tick(220);
+  check('"#tr" finds everything tagged #trip', rows().length === 5 && rows().every(t => t.tags.includes('trip')), rows().length);
+  check('…with what it adds up to (expenses − refunds)', /5 transactions/.test($('.tag-sum').textContent) && /\$115\.00 spent/.test($('.tag-sum').textContent), $('.tag-sum')?.textContent);
+  type('#t-search', 'beach'); await tick(220);
+  check('plain search matches tags too', rows().some(t => t.description === 'Beach dinner'));
+  type('#t-search', ''); await tick(220);
+  txnFilters.month = 'current';
+  openTxnSheet(dinner.id); await tick(30);
+  check('the detail shows its tags', $$('#sheetBody [data-show-tag]').map(b => b.textContent).join(' ') === '#trip #beach');
+  await click($('#sheetBody [data-show-tag="trip"]'), 60);
+  check('tapping a tag shows it in Activity (all months)', state.view === 'txns' && txnFilters.tag === 'trip' && txnFilters.month === 'all' && rows().length === 5 && !!$('.chip[data-tag-clear]'));
+  await click($('.chip[data-tag-clear]'), 60);
+  check('× clears the tag filter', txnFilters.tag === null && !$('.tag-sum'));
+
+  // More → Tags.
+  tagsMod.openTagsSheet(); await tick(30);
+  const tagRows = $$('#sheetBody .tag-row');
+  check('Tags lists each tag with count + spend', tagRows.length === 2 && /#trip/.test(tagRows[0].textContent) && /5 transactions/.test(tagRows[0].textContent) && /\$115\.00/.test(tagRows[0].textContent));
+  await click(tagRows[1], 60);
+  check('…and opens one in Activity', txnFilters.tag === 'beach' && rows().length === 1);
+  txnFilters.tag = null; txnFilters.month = 'current';
+  app.navigate('home'); await tick(20);
+}
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('everyday tests');

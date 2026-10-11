@@ -18,13 +18,14 @@
    ============================================================ */
 
 import { $, $$, today, uid, toast, toastAction, esc, haptic, busyGuard, fmt, round2, daysBetween, squash, evalAmountExpr, toLocalISO } from './util.js';
-import { state, dbPut, saveFlags } from './db.js';
+import { state, dbPut, dbDel, saveFlags, splitParts } from './db.js';
 import { openPicker, closeSheet } from './sheet.js';
 import { navigate } from './app.js';
 import { getMerchantSuggestions, lookupMerchant, invalidateMerchantCache, preferredAccountFor, categoryRule, categoryRuleKey, refundBudgetCategory, merchantCore } from './merchants.js';
 import { findMatchingBill, markBillPaidWith } from './bills.js';
 import { acctTypeMap, txnEffectsCents, balanceLatest } from './effects.js';  // NEW(v3.1)
 import { isWide } from './layout.js';                                          // NEW(v3.1)
+import { allTags, parseTags } from './tags.js';                               // NEW(v3.1)
 
 // FIX(v2.9.1): the pre-selected account is the one you've actually used most
 // (among valid options for the current type) — no personal names in code.
@@ -47,14 +48,17 @@ const BLANK = {
   fromAccount: null, editingId: null,
   accountTouched: false,   // NEW(v3.0): the user picked the account themselves
   accountSource: null,     // NEW(v3.0): 'rule' | 'habit' when a category default chose it
-  offsetCategory: null     // NEW(v3.0): Refund → budget category (null = auto, 'none' = opt out)
+  offsetCategory: null,    // NEW(v3.0): Refund → budget category (null = auto, 'none' = opt out)
+  splits: null,            // NEW(v3.1): [{ category, amount }] — one charge across categories
+  splitId: null,           // NEW(v3.1): the split being edited
+  tags: []                 // NEW(v3.1): ['trip', …]
 };
 export const addForm = { ...BLANK, date: today() };
 
 // NEW(v3.0): one place that resets the form (quick-log, reconcile prefill,
 // cancel, after save). `over` sets fields; date defaults to today.
 export function resetAddForm(over = {}){
-  Object.assign(addForm, BLANK, { date: today() }, over);
+  Object.assign(addForm, BLANK, { date: today(), tags: [] }, over);
 }
 
 // v3.1: closed / deleted accounts (offered only while editing their own
@@ -127,6 +131,9 @@ export function renderAdd(){
   if (!addForm.category || !catList.includes(addForm.category)){
     addForm.category = catList[0] || null;
   }
+  // NEW(v3.1): an expense can be split across categories (item 29).
+  if (addForm.type !== 'Expense') addForm.splits = null;
+  const splitting = Array.isArray(addForm.splits);
   if (!addForm.account || !acctOptions.find(a => a.name === addForm.account)){
     addForm.accountTouched = false;
     addForm.account = mostUsedAccount(acctOptions)?.name || null;
@@ -215,18 +222,21 @@ export function renderAdd(){
       </div>
       <div class="field">
         <label>Category</label>
+        ${splitting ? `<div class="input split-sum">Split · ${addForm.splits.length} parts</div>` : `
         <button class="input picker-btn" id="f-cat" type="button">
           <span class="picker-val">${esc(addForm.category || '—')}</span>
           <span class="picker-chev">▾</span>
-        </button>
+        </button>`}
+        ${!splitting && addForm.type === 'Expense' ? '<button type="button" class="link-btn" id="f-split">Split across categories</button>' : ''}
       </div>
     </div>
 
-    ${topCats.length > 1 ? `
+    ${!splitting && topCats.length > 1 ? `
       <div class="cat-chips">
         ${topCats.map(c => `<button type="button" class="chip cat-chip" data-cat="${esc(c)}" aria-pressed="${addForm.category === c}">${esc(c)}</button>`).join('')}
       </div>
     ` : ''}
+    ${splitting ? splitBoxHTML() : ''}
 
     <div class="field">
       <label>${accountLabel}</label>
@@ -252,6 +262,8 @@ export function renderAdd(){
       <input class="input" id="f-desc" type="text" autocomplete="off" placeholder="e.g. wingstop lunch" value="${esc(addForm.description)}" />
       <div id="f-suggest" class="suggest" aria-hidden="true"></div>
     </div>
+
+    ${tagFieldHTML()}
 
     ${refundOffset}
 
@@ -289,10 +301,11 @@ export function renderAdd(){
   $$('.cat-chip', v).forEach(ch => ch.addEventListener('click', () => setCategory(ch.dataset.cat)));
 
   // Pickers — CLOSE the sheet explicitly: opened from a view, not a sheet.
-  $('#f-cat', v).addEventListener('click', () => openPicker('Category', catList, addForm.category, (val) => {
+  $('#f-cat', v)?.addEventListener('click', () => openPicker('Category', catList, addForm.category, (val) => {
     closeSheet();
     setCategory(val);
   }));
+  wireSplit(v, catList, acctOptions);   // NEW(v3.1)
   $('#f-acct', v).addEventListener('click', () => openPicker(accountLabel, acctOptions.map(pickerOpt), addForm.account, (val) => {
     closeSheet();
     const auto = addForm.account;
@@ -371,6 +384,7 @@ export function renderAdd(){
     setTimeout(() => suggest.classList.remove('open'), 150);
   });
   descInput.addEventListener('focus', updateSuggestions);
+  wireTags(v);   // NEW(v3.1)
 
   $('#f-save', v).addEventListener('click', saveTransaction);
   if ($('#f-cancel', v)) $('#f-cancel', v).addEventListener('click', cancelEdit);
@@ -424,7 +438,184 @@ export function applyPadKey(cur, k){
 function amountChanged(){
   const calc = $('#f-amt-calc');
   if (calc) calc.textContent = calcPreview(addForm.amount);
+  const left = $('#sp-left');
+  if (left) left.textContent = splitLeftText();
   renderAddSide();
+}
+
+/* ── NEW(v3.1): tags (item 30) ── */
+function tagFieldHTML(){
+  const chosen = addForm.tags;
+  const sugg = allTags().map(t => t.tag).filter(t => !chosen.includes(t)).slice(0, 6);
+  return `
+    <div class="field">
+      <label for="f-tag-input">Tags <span class="muted small">(optional)</span></label>
+      <div class="tag-box" id="f-tags">
+        ${chosen.map(t => `<button type="button" class="tag on" data-del-tag="${esc(t)}" aria-label="Remove tag ${esc(t)}">#${esc(t)} ×</button>`).join('')}
+        <input class="tag-input" id="f-tag-input" type="text" autocomplete="off" enterkeyhint="done" placeholder="${chosen.length ? 'add another' : '#trip, #work…'}" />
+      </div>
+      ${sugg.length ? `<div class="tag-suggest">${sugg.map(t => `<button type="button" class="tag" data-add-tag="${esc(t)}">#${esc(t)}</button>`).join('')}</div>` : ''}
+    </div>`;
+}
+function commitTagInput(){
+  const inp = $('#f-tag-input');
+  if (!inp || !inp.value.trim()) return false;
+  addForm.tags = [...new Set([...addForm.tags, ...parseTags(inp.value)])];
+  inp.value = '';
+  return true;
+}
+function wireTags(v){
+  const inp = $('#f-tag-input', v);
+  if (!inp) return;
+  const refocus = () => { renderAdd(); $('#f-tag-input')?.focus(); };
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ','){ e.preventDefault(); if (commitTagInput()) refocus(); }
+    else if (e.key === 'Backspace' && !inp.value && addForm.tags.length){ addForm.tags = addForm.tags.slice(0, -1); refocus(); }
+  });
+  inp.addEventListener('input', () => { if (/[\s,]$/.test(inp.value) && commitTagInput()) refocus(); });
+  // No commit on blur: re-rendering there would eat a tap on Save (Save commits it).
+  $$('[data-add-tag]', v).forEach(b => b.addEventListener('mousedown', (e) => {   // before the input's blur
+    e.preventDefault();
+    addForm.tags = [...new Set([...addForm.tags, b.dataset.addTag])];
+    renderAdd();
+  }));
+  $$('[data-del-tag]', v).forEach(b => b.addEventListener('click', () => {
+    addForm.tags = addForm.tags.filter(t => t !== b.dataset.delTag);
+    renderAdd();
+  }));
+}
+
+/* ── NEW(v3.1): split one charge across categories (item 29) ───────────
+   Saved as one ordinary transaction per part, sharing a splitId (plus
+   splitIndex for order and splitTotal) — so balances, budgets, charts and
+   search need no special cases. Reconcile matches a split as one charge;
+   delete / edit / log-again act on the whole split. */
+function splitBoxHTML(){
+  const n = addForm.splits.length;
+  return `
+    <div class="split-box" id="f-splits">
+      ${addForm.splits.map((p, i) => `
+        <div class="sp-row">
+          <button class="input picker-btn sp-cat" type="button" data-i="${i}">
+            <span class="picker-val">${esc(p.category || '—')}</span><span class="picker-chev">▾</span>
+          </button>
+          <input class="input sp-amt" data-i="${i}" type="text" inputmode="decimal" autocomplete="off"
+                 placeholder="${i === n - 1 ? 'the rest' : '0.00'}" value="${esc(p.amount)}" aria-label="Amount for part ${i + 1}" />
+          <button type="button" class="sp-del" data-i="${i}" aria-label="Remove part ${i + 1}">×</button>
+        </div>`).join('')}
+      <div class="sp-foot">
+        <button type="button" class="link-btn" id="sp-add">+ Add a part</button>
+        <span class="sp-left" id="sp-left">${esc(splitLeftText())}</span>
+      </div>
+      <button type="button" class="link-btn" id="sp-off">Don't split</button>
+    </div>`;
+}
+
+// Cents assigned so far, and what's left of the total.
+function splitMath(){
+  const total = evalAmountExpr(addForm.amount);
+  let sumC = 0, blanks = 0;
+  for (const p of addForm.splits || []){
+    if (!String(p.amount ?? '').trim()){ blanks++; continue; }
+    const n = evalAmountExpr(p.amount);
+    if (!isNaN(n) && n > 0) sumC += Math.round(n * 100);
+  }
+  return { total, sumC, blanks, leftC: isNaN(total) ? NaN : Math.round(total * 100) - sumC };
+}
+function splitLeftText(){
+  const m = splitMath();
+  if (isNaN(m.leftC)) return 'Enter the total above';
+  if (m.leftC === 0 && !m.blanks) return '✓ Adds up';
+  if (m.leftC > 0) return m.blanks === 1 ? `${fmt(m.leftC / 100)} → the blank part` : `${fmt(m.leftC / 100)} left to assign`;
+  if (m.leftC === 0) return '✓ Adds up — remove the empty part';
+  return `Over by ${fmt(-m.leftC / 100)}`;
+}
+
+function wireSplit(v, catList, acctOptions){
+  $('#f-split', v)?.addEventListener('click', () => {
+    const first = addForm.category;
+    addForm.splits = [{ category: first, amount: '' }, { category: catList.find(c => c !== first) || first, amount: '' }];
+    renderAdd();
+    $('#view-add .sp-amt')?.focus();
+  });
+  if (!Array.isArray(addForm.splits)) return;
+  $$('.sp-cat', v).forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.i);
+    openPicker('Category', catList, addForm.splits[i].category, (val) => {
+      closeSheet();
+      addForm.splits[i].category = val;
+      if (i === 0){ addForm.category = val; applyCategoryDefault(acctOptions); }
+      renderAdd();
+    });
+  }));
+  $$('.sp-amt', v).forEach(inp => inp.addEventListener('input', () => {
+    addForm.splits[Number(inp.dataset.i)].amount = inp.value;
+    $('#sp-left', v).textContent = splitLeftText();
+  }));
+  $$('.sp-del', v).forEach(b => b.addEventListener('click', () => {
+    addForm.splits.splice(Number(b.dataset.i), 1);
+    if (addForm.splits.length < 2){             // one part left = not a split
+      addForm.category = addForm.splits[0]?.category || addForm.category;
+      addForm.splits = null;
+    }
+    renderAdd();
+  }));
+  $('#sp-add', v).addEventListener('click', () => {
+    addForm.splits.push({ category: catList.find(c => !addForm.splits.some(p => p.category === c)) || catList[0], amount: '' });
+    renderAdd();
+    $$('#view-add .sp-amt').at(-1)?.focus();
+  });
+  $('#sp-off', v).addEventListener('click', () => {
+    addForm.category = addForm.splits[0]?.category || addForm.category;
+    addForm.splits = null;
+    renderAdd();
+  });
+}
+
+// Validates the parts (one may be blank = the rest) and writes the split.
+// Returns the first part, or null when something doesn't add up.
+async function saveSplit(total){
+  const totalC = Math.round(total * 100);
+  const parts = addForm.splits.map(p => ({
+    category: p.category,
+    cents: String(p.amount ?? '').trim() ? Math.round(evalAmountExpr(p.amount) * 100) : null
+  }));
+  if (parts.some(p => p.cents !== null && !(p.cents > 0))){ toast('Each part needs a valid amount'); return null; }
+  if (parts.some(p => !p.category)){ toast('Pick a category for each part'); return null; }
+  const blanks = parts.filter(p => p.cents === null);
+  const assigned = parts.reduce((c, p) => c + (p.cents || 0), 0);
+  if (blanks.length === 1 && totalC - assigned > 0) blanks[0].cents = totalC - assigned;
+  else if (blanks.length){ toast('Fill in the parts — one can stay blank for the rest'); return null; }
+  const sum = parts.reduce((c, p) => c + p.cents, 0);
+  if (sum !== totalC){
+    toast(sum < totalC ? `Parts add up to ${fmt(sum / 100)} — ${fmt((totalC - sum) / 100)} left` : `Parts are ${fmt((sum - totalC) / 100)} over the total`);
+    return null;
+  }
+  const splitId = addForm.splitId || uid();
+  const old = addForm.splitId ? splitParts(addForm.splitId)
+            : addForm.editingId ? state.transactions.filter(t => t.id === addForm.editingId) : [];
+  const saved = [];
+  for (const [i, p] of parts.entries()){
+    const txn = {
+      ...(old[i] || {}),
+      id: old[i]?.id || uid(),
+      date: addForm.date, type: 'Expense', account: addForm.account,
+      category: p.category, description: addForm.description.trim(),
+      amount: p.cents / 100, fromAccount: null,
+      splitId, splitIndex: i, splitTotal: total
+    };
+    if (addForm.tags.length) txn.tags = [...addForm.tags]; else delete txn.tags;
+    delete txn.offsetCategory;
+    await dbPut('transactions', txn);
+    const idx = state.transactions.findIndex(t => t.id === txn.id);
+    if (idx >= 0) state.transactions[idx] = txn; else state.transactions.push(txn);
+    saved.push(txn);
+  }
+  for (const t of old.slice(parts.length)){        // parts removed while editing
+    await dbDel('transactions', t.id);
+    state.transactions = state.transactions.filter(x => x.id !== t.id);
+  }
+  return saved[0];
 }
 
 function syncDateChips(){
@@ -551,27 +742,45 @@ const saveTransaction = busyGuard(async () => {
   if (!addForm.account) { toast('Pick an account'); return; }
   const needsFrom = ['Transfer','CC Payment','Loan Payment','Balance Transfer'].includes(addForm.type);
   if (needsFrom && !addForm.fromAccount) { toast('Pick a source account'); return; }
+  commitTagInput();   // v3.1: a tag still being typed counts
 
-  const existing = addForm.editingId ? state.transactions.find(t => t.id === addForm.editingId) : null;
-  // FIX(v3.0): an edit keeps any fields this form doesn't manage.
-  const txn = {
-    ...(existing || {}),
-    id: addForm.editingId || uid(),
-    date: addForm.date,
-    type: addForm.type,
-    account: addForm.account,
-    category: addForm.category,
-    description: addForm.description.trim(),
-    amount: amt,
-    fromAccount: needsFrom ? addForm.fromAccount : null
-  };
-  if (addForm.type === 'Refund' && addForm.offsetCategory) txn.offsetCategory = addForm.offsetCategory;
-  else delete txn.offsetCategory;
+  const splitting = Array.isArray(addForm.splits) && addForm.type === 'Expense';
+  let txn;
+  if (splitting){
+    txn = await saveSplit(amt);                    // NEW(v3.1)
+    if (!txn) return;
+  } else {
+    const existing = addForm.editingId ? state.transactions.find(t => t.id === addForm.editingId) : null;
+    // FIX(v3.0): an edit keeps any fields this form doesn't manage.
+    txn = {
+      ...(existing || {}),
+      id: addForm.editingId || uid(),
+      date: addForm.date,
+      type: addForm.type,
+      account: addForm.account,
+      category: addForm.category,
+      description: addForm.description.trim(),
+      amount: amt,
+      fromAccount: needsFrom ? addForm.fromAccount : null
+    };
+    if (addForm.type === 'Refund' && addForm.offsetCategory) txn.offsetCategory = addForm.offsetCategory;
+    else delete txn.offsetCategory;
+    if (addForm.tags.length) txn.tags = [...addForm.tags]; else delete txn.tags;   // NEW(v3.1)
+    // NEW(v3.1): "Don't split" on an existing split — this part becomes the
+    // whole transaction and the other parts go.
+    if (addForm.splitId){
+      delete txn.splitId; delete txn.splitIndex; delete txn.splitTotal;
+      for (const t of splitParts(addForm.splitId).filter(t => t.id !== txn.id)){
+        await dbDel('transactions', t.id);
+        state.transactions = state.transactions.filter(x => x.id !== t.id);
+      }
+    }
 
-  await dbPut('transactions', txn);
-  const idx = state.transactions.findIndex(t => t.id === txn.id);
-  if (idx >= 0) state.transactions[idx] = txn;
-  else state.transactions.push(txn);
+    await dbPut('transactions', txn);
+    const idx = state.transactions.findIndex(t => t.id === txn.id);
+    if (idx >= 0) state.transactions[idx] = txn;
+    else state.transactions.push(txn);
+  }
   state.transactions.sort((a,b) => (b.date||'').localeCompare(a.date||''));
   invalidateMerchantCache();
 
@@ -584,8 +793,8 @@ const saveTransaction = busyGuard(async () => {
   // FIX(v1.2): edits return to Activity; fresh adds go Home.
   navigate(wasEdit ? 'txns' : 'home');
 
-  // NEW(v3.0): logged a bill by hand? Offer to link it.
-  const bill = findMatchingBill(txn);
+  // NEW(v3.0): logged a bill by hand? Offer to link it. (Not for a split.)
+  const bill = splitting ? null : findMatchingBill(txn);
   if (bill){
     toastAction(`${wasEdit ? 'Updated' : 'Saved'} · looks like "${bill.name}"`, 'Mark paid', async () => {
       await markBillPaidWith(bill, txn.date.slice(0, 7), txn.id);
@@ -600,14 +809,54 @@ function cancelEdit(){
   navigate('txns');
 }
 
+// NEW(v3.1): a split loads as a whole — total + every part.
+function splitFormFields(txn){
+  const parts = splitParts(txn.splitId);
+  if (parts.length < 2) return null;
+  const totalC = parts.reduce((c, p) => c + Math.round(p.amount * 100), 0);
+  return {
+    amount: String(totalC / 100), category: parts[0].category,
+    splits: parts.map(p => ({ category: p.category, amount: String(p.amount) })), first: parts[0]
+  };
+}
+
 export function startEdit(txn){
+  const sp = txn.splitId ? splitFormFields(txn) : null;
+  if (sp){
+    resetAddForm({
+      type: txn.type, date: txn.date, account: txn.account, description: String(txn.description ?? ''),
+      amount: sp.amount, category: sp.category, splits: sp.splits,
+      editingId: sp.first.id, splitId: txn.splitId, accountTouched: true, tags: [...(txn.tags || [])]
+    });
+    navigate('add');
+    return;
+  }
   resetAddForm({
     type: txn.type, date: txn.date, account: txn.account, category: txn.category,
     description: String(txn.description ?? ''), /* FIX(v2.1): non-string descriptions */
     amount: String(txn.amount), fromAccount: txn.fromAccount,
     offsetCategory: txn.offsetCategory || null,
-    editingId: txn.id,
+    editingId: txn.id, tags: [...(txn.tags || [])],
     accountTouched: true   // editing: changing the category must not move the account
+  });
+  navigate('add');
+}
+
+// NEW(v3.1): "Log again" — a new transaction like `txn` (type, accounts,
+// category, note, amount), dated today. A closed or deleted account isn't
+// carried over; the category's default account fills in instead.
+export function logAgain(txn){
+  const usable = (n) => !!n && state.accounts.some(a => a.name === n && a.active);
+  const sp = txn.splitId ? splitFormFields(txn) : null;   // a split repeats as a split
+  resetAddForm({
+    type: txn.type, category: sp ? sp.category : txn.category,
+    splits: sp ? sp.splits : null,
+    account: usable(txn.account) ? txn.account : null,
+    fromAccount: usable(txn.fromAccount) ? txn.fromAccount : null,
+    description: String(txn.description ?? ''),
+    amount: sp ? sp.amount : String(txn.amount),
+    offsetCategory: txn.offsetCategory || null, tags: [...(txn.tags || [])],
+    accountTouched: usable(txn.account)
   });
   navigate('add');
 }

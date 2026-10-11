@@ -122,8 +122,17 @@ export function openHomeCustomizeSheet(){
 // Month swipe (v2.9.2) moved to app.js in v3.1 — shared by Home, Bills and
 // Activity (wireMonthSwipes).
 
+// NEW(v3.1): Home's Recent card — what you just added (newest entry first,
+// whatever its date: a backdated receipt shows up too) or the latest by date.
+const addedAt = (t) => t.createdAt || t.updatedAt || 0;
+export function recentTxns(mode, n = 5){
+  if (mode === 'date') return state.transactions.slice(0, n);   // state is date-sorted
+  return [...state.transactions].sort((a, b) => addedAt(b) - addedAt(a)).slice(0, n);
+}
+
 export function renderHome(){
   const { year, month } = state.selected;
+  const recentMode = state.flags.recentMode === 'date' ? 'date' : 'added';
   const tot = monthTotals(year, month);
   const ym = `${year}-${String(month).padStart(2,'0')}`;
 
@@ -192,8 +201,13 @@ export function renderHome(){
     insights: renderInsightsCard(year, month),
     recent: state.transactions.length ? `
       <div class="card" style="margin-top:14px;">
-        <h3 class="card-title">Recent</h3>
-        ${state.transactions.slice(0, 5).map(t => txnHTML(t)).join('')}
+        <h3 class="card-title">Recent
+          <span class="recent-modes">
+            <button type="button" class="chip mini" data-rm="added" aria-pressed="${recentMode === 'added'}">Just added</button>
+            <button type="button" class="chip mini" data-rm="date" aria-pressed="${recentMode === 'date'}">By date</button>
+          </span>
+        </h3>
+        ${recentTxns(recentMode).map(t => txnHTML(t)).join('')}
       </div>` : '',
     bills: upcomingPreview.length ? `
       <div class="card" style="margin-top:14px;">
@@ -294,6 +308,12 @@ export function renderHome(){
 
   // NEW(v2.9.2): recent transactions — tap to view/edit without leaving Home.
   $$('.txn', v).forEach(el => el.addEventListener('click', () => openTxnSheet(el.dataset.id)));
+  $$('[data-rm]', v).forEach(b => b.addEventListener('click', async (e) => {   // NEW(v3.1)
+    e.stopPropagation();
+    state.flags.recentMode = b.dataset.rm;
+    await saveFlags();
+    renderHome();
+  }));
 
   // NEW(v2.9.2): tap an account row → Activity filtered to that account.
   // FIX(v3.0): an exact account filter, not a text search — searching

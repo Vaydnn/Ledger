@@ -126,6 +126,9 @@ export async function dbPut(store, obj){
   // backbone of future last-write-wins sync). Mutating the caller's object is
   // intentional — the in-memory state copy stays consistent with disk.
   normalizeRecord(store, obj);
+  // NEW(v3.1): when a transaction first entered the ledger (Home's "Just
+  // added"). A pre-3.1 record keeps its last-write time as its best guess.
+  if (store === 'transactions' && !obj.createdAt) obj.createdAt = obj.updatedAt || Date.now();
   obj.updatedAt = Date.now();
   return new Promise((res, rej) => {
     const tx = db.transaction(store, 'readwrite');
@@ -261,6 +264,13 @@ export const state = {
   flags: { id:'flags' },             // persisted app flags (meta store record 'flags')
   view: 'home'
 };
+
+// NEW(v3.1): the parts of a split transaction, in their order.
+export function splitParts(splitId){
+  if (!splitId) return [];
+  return state.transactions.filter(t => t.splitId === splitId)
+    .sort((a, b) => (a.splitIndex ?? 0) - (b.splitIndex ?? 0));
+}
 
 export async function loadState(){
   dataVersion.n++; // NEW(v2.5): state arrays are about to be replaced wholesale

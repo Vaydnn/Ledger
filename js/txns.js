@@ -4,20 +4,22 @@
    so the mobile keyboard doesn't close on every filter update.
    ============================================================ */
 
-import { $, $$, monthKey, monthName, parseLocalDate, today, toastAction, parseAmount, toCents, esc, haptic, busyGuard, toast } from './util.js';
-import { state, dbDel, dbPut } from './db.js';
+import { $, $$, monthKey, monthName, parseLocalDate, today, toastAction, parseAmount, toCents, esc, haptic, busyGuard, toast, fmt } from './util.js';
+import { state, dbDel, dbPut, splitParts } from './db.js';
 import { openSheet, closeSheet, isSheetOpen } from './sheet.js';
 import { renderCurrent } from './app.js';
-import { startEdit } from './add.js';
+import { startEdit, logAgain } from './add.js';
 import { invalidateMerchantCache } from './merchants.js';
 import { trashTxn, restoreTxn } from './trash.js';
 import { isWide } from './layout.js';   // NEW(v3.1)
+import { normalizeTag, tagSpent, showTagInActivity } from './tags.js';   // NEW(v3.1)
 
 // NEW(v2.0): amount + date-range filters. amtExact matches to the cent
 // (the "did I log that $77.18 charge?" case); min/max are inclusive bounds;
 // a date range overrides the month chip while active.
 // NEW(v3.0): `account` — an exact account filter (account OR source account).
-export const txnFilters = { type:'all', search:'', month:'current', account:null,
+// NEW(v3.1): `tag` — transactions carrying that tag (Tags / a tag chip).
+export const txnFilters = { type:'all', search:'', month:'current', account:null, tag:null,
   amtExact:null, amtMin:null, amtMax:null, dateFrom:'', dateTo:'' };
 
 // NEW(v3.0): Home's account rows land here — exact match, every type.
@@ -44,9 +46,10 @@ let selectedTxnId = null;
 export function renderTxns(){
   const v = $('#view-txns');
   const listPart = `
-    <input class="input txn-search" id="t-search" type="search" placeholder="Search description, category, account…" value="${esc(txnFilters.search)}" />
+    <input class="input txn-search" id="t-search" type="search" placeholder="Search description, category, account, #tag…" value="${esc(txnFilters.search)}" />
     <div class="txn-filters">
       ${txnFilters.account ? `<button class="chip" data-acct-clear="1" aria-pressed="true">${esc(txnFilters.account)} ×</button>` : ''}
+      ${txnFilters.tag ? `<button class="chip" data-tag-clear="1" aria-pressed="true">#${esc(txnFilters.tag)} ×</button>` : ''}
       ${['all','Expense','Income','Refund','Investment','Transfer','CC Payment','Loan Payment','Balance Transfer'].map(t =>
         `<button class="chip" data-type="${t}" aria-pressed="${txnFilters.type===t}">${t==='all'?'All':t}</button>`
       ).join('')}
@@ -75,6 +78,9 @@ export function renderTxns(){
   }));
   $('.chip[data-acct-clear]', v)?.addEventListener('click', () => {
     txnFilters.account = null; resetRenderCap(); renderTxns();
+  });
+  $('.chip[data-tag-clear]', v)?.addEventListener('click', () => {
+    txnFilters.tag = null; resetRenderCap(); renderTxns();
   });
   $('.chip[data-month]', v).addEventListener('click', () => {
     txnFilters.month = txnFilters.month === 'current' ? 'all' : 'current';
@@ -192,9 +198,15 @@ function renderTxnResults(){
     if (txnFilters.amtMin != null) list = list.filter(t => toCents(t.amount) >= toCents(txnFilters.amtMin));
     if (txnFilters.amtMax != null) list = list.filter(t => toCents(t.amount) <= toCents(txnFilters.amtMax));
   }
-  if (txnFilters.search){
+  if (txnFilters.tag) list = list.filter(t => (t.tags || []).includes(txnFilters.tag));
+  // NEW(v3.1): "#tri" searches tags (prefix); plain text also matches tags.
+  const tagQ = /^#\S/.test(txnFilters.search.trim()) ? normalizeTag(txnFilters.search) : null;
+  if (tagQ){
+    list = list.filter(t => (t.tags || []).some(x => x.startsWith(tagQ)));
+  } else if (txnFilters.search){
     const q = txnFilters.search.toLowerCase();
     list = list.filter(t =>
+      (t.tags || []).some(x => x.includes(q)) ||
       String(t.description ?? '').toLowerCase().includes(q) || /* FIX(v2.1): non-string descriptions */
       String(t.category ?? '').toLowerCase().includes(q) ||
       String(t.account ?? '').toLowerCase().includes(q) ||
@@ -211,14 +223,19 @@ function renderTxnResults(){
   shown.forEach(t => { (groups[t.date] = groups[t.date] || []).push(t); });
   const dates = Object.keys(groups).sort((a,b) => b.localeCompare(a));
 
-  results.innerHTML = dates.length === 0
+  // NEW(v3.1): looking at a tag → what it adds up to.
+  const tagHead = (txnFilters.tag || tagQ) && total ? `
+    <div class="tag-sum"><span class="tag on">#${esc(txnFilters.tag || tagQ)}</span>
+      <span class="muted small">${total} transaction${total === 1 ? '' : 's'}</span>
+      <span class="mono">${fmt(tagSpent(sorted))} spent</span></div>` : '';
+  results.innerHTML = tagHead + (dates.length === 0
     ? `<div class="empty"><div class="big">Nothing here yet.</div>No transactions match these filters.</div>`
     : dates.map(d => `
         <div class="txn-day">${formatDayHeader(d)}</div>
         ${groups[d].map(t => txnHTML(t)).join('')}
       `).join('') + (truncated
         ? `<button class="btn ghost" id="txn-show-all" style="margin-top:10px;">Show all ${total} (${total - shown.length} more)</button>`
-        : '');
+        : ''));
   $$('.txn', results).forEach(el => {
     if (el.dataset.id === selectedTxnId) el.classList.add('selected');
     el.addEventListener('click', () => $('#txn-detail') ? selectTxn(el.dataset.id) : openTxnSheet(el.dataset.id));
@@ -274,14 +291,23 @@ function txnDetailHTML(t){
       <div style="font-size:14px;font-weight:500;">${esc(t.category || t.type)}</div>
       <div class="muted small" style="margin-top:6px;">${esc(t.type)} · ${esc(t.account)}${t.fromAccount ? ' (from '+esc(t.fromAccount)+')' : ''}</div>
       ${t.description ? `<div style="margin-top:10px;font-size:13.5px;">${esc(t.description)}</div>` : ''}
+      ${(t.tags || []).length ? `<div class="td-tags">${t.tags.map(x => `<button type="button" class="tag on" data-show-tag="${esc(x)}">#${esc(x)}</button>`).join('')}</div>` : ''}
+      ${splitDetailHTML(t)}
     </div>
-    <button class="btn td-edit">Edit</button>
+    <button class="btn td-edit">Edit${t.splitId ? ' split' : ''}</button>
+    <button class="btn secondary td-again" style="margin-top:10px;">Log again</button>
     <button class="btn danger td-del" style="margin-top:10px;">Delete</button>
   `;
 }
 
 function wireTxnDetail(root, t, { onDeleted, inSheet = false } = {}){
   $('.td-edit', root).addEventListener('click', () => { if (inSheet) closeSheet(); startEdit(t); });
+  $('.td-again', root).addEventListener('click', () => { if (inSheet) closeSheet(); logAgain(t); });   // NEW(v3.1)
+  $$('[data-show-tag]', root).forEach(b => b.addEventListener('click', () => {                    // NEW(v3.1)
+    if (inSheet) closeSheet();
+    showTagInActivity(b.dataset.showTag);
+    if (!inSheet) renderTxns();
+  }));
   $('.td-del', root).addEventListener('click', busyGuard(async () => {
     await deleteTransaction(t);
     if (inSheet) closeSheet();
@@ -289,29 +315,46 @@ function wireTxnDetail(root, t, { onDeleted, inSheet = false } = {}){
   }));
 }
 
+// NEW(v3.1): a split's parts, on any one part's detail.
+function splitDetailHTML(t){
+  if (!t.splitId) return '';
+  const parts = splitParts(t.splitId);
+  const total = parts.reduce((c, p) => c + toCents(p.amount), 0) / 100;
+  return `
+    <div class="td-split">
+      <div class="muted small" style="margin-bottom:4px;">Split · ${fmt(total)} in ${parts.length} parts</div>
+      ${parts.map(p => `<div class="rb-row${p.id === t.id ? ' this' : ''}"><span>${esc(p.category || '—')}</span><span class="mono">${fmt(p.amount)}</span></div>`).join('')}
+    </div>`;
+}
+
 // NEW(v2.0) soft delete — the txn moves to the trash store (30-day retention,
 // restorable from More → Trash) and the toast offers Undo. A bill payment's
 // paid flag is cleared (and restored by Undo — FIX v3.0).
+// v3.1: a split goes (and comes back) as a whole.
 async function deleteTransaction(t){
-  await trashTxn(t);
-  await dbDel('transactions', t.id);
-  state.transactions = state.transactions.filter(x => x.id !== t.id);
+  const group = t.splitId ? splitParts(t.splitId) : [t];
+  const ids = new Set(group.map(x => x.id));
+  for (const x of group){
+    await trashTxn(x);
+    await dbDel('transactions', x.id);
+  }
+  state.transactions = state.transactions.filter(x => !ids.has(x.id));
   const unlinked = [];
   for (const bill of state.bills){
     if (!bill.paidMonths) continue;
     let changed = false;
     for (const [ym, txnId] of Object.entries(bill.paidMonths)){
-      if (txnId === t.id){ delete bill.paidMonths[ym]; unlinked.push([bill, ym]); changed = true; }
+      if (ids.has(txnId)){ delete bill.paidMonths[ym]; unlinked.push([bill, ym, txnId]); changed = true; }
     }
     if (changed) await dbPut('bills', bill);
   }
   invalidateMerchantCache();
   haptic([10,30,10]); /* NEW(v2.2): destructive pattern */
-  toastAction('Deleted', 'Undo', async () => {
-    await restoreTxn({ ...t, deletedAt: Date.now() });
-    for (const [bill, ym] of unlinked){
+  toastAction(group.length > 1 ? `Deleted split (${group.length} parts)` : 'Deleted', 'Undo', async () => {
+    for (const x of group) await restoreTxn({ ...x, deletedAt: Date.now() });
+    for (const [bill, ym, txnId] of unlinked){
       bill.paidMonths = bill.paidMonths || {};
-      bill.paidMonths[ym] = t.id;
+      bill.paidMonths[ym] = txnId;
       await dbPut('bills', bill);
     }
     renderCurrent();
@@ -343,7 +386,7 @@ export function txnHTML(t){
   const [cls, sym] = iconMap[t.type] || ['',''];
   const amtCls = (t.type === 'Income' || t.type === 'Refund') ? 'pos' : (t.type === 'Expense' ? 'neg' : 'neu');
   // FIX(v1.2): user-entered strings escaped before innerHTML.
-  const meta = esc((t.fromAccount ? `${t.fromAccount} → ` : '') + t.account + (t.description ? ' · ' + t.description : ''));
+  const meta = esc((t.fromAccount ? `${t.fromAccount} → ` : '') + t.account + (t.description ? ' · ' + t.description : '') + (t.splitId ? ' · split' : '') + ((t.tags || []).length ? ' · ' + t.tags.map(x => '#' + x).join(' ') : ''));   // v3.1
   return `
     <div class="txn" data-id="${esc(t.id)}">
       <div class="txn-icon ${cls}">${sym}</div>

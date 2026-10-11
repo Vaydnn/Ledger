@@ -335,7 +335,7 @@ function learnFromMatches(pairs, cities){
     const key = `${txn.type}|${stmtKey(csv.desc, cities)}`;
     const t = tally[key] || (tally[key] = { cats:{}, descs:{} });
     const w = recency(txn.date);
-    if (txn.category) t.cats[txn.category] = (t.cats[txn.category] || 0) + w;
+    if (txn.category && !txn.parts) t.cats[txn.category] = (t.cats[txn.category] || 0) + w;   // a split's "A + B" isn't a category
     const d = String(txn.description || '').trim();
     if (d) t.descs[d] = (t.descs[d] || 0) + w;
   }
@@ -455,10 +455,10 @@ function runDiff(){
 
   // Ledger side: every txn touching this account in the padded range.
   // Unmatched ledger txns are only *reported* inside the unpadded range.
-  const ledger = state.transactions.filter(t =>
+  const ledger = collapseSplits(state.transactions.filter(t =>
     t.date && t.date >= from && t.date <= to &&
     (t.account === recState.account || t.fromAccount === recState.account)
-  );
+  ));
 
   // Per |amount| bucket, both sides by date; each CSV row takes the EARLIEST
   // unused ledger txn within the window (earliest-eligible, not nearest —
@@ -552,6 +552,26 @@ function shiftISO(iso, days){
   return toLocalISO(new Date(d.getFullYear(), d.getMonth(), d.getDate() + days));
 }
 
+// NEW(v3.1): a split transaction is ONE charge on the statement — its parts
+// are matched as a single entry (the first part's id/date, the parts' sum,
+// categories joined). `parts` lets corrections reach every part.
+export function collapseSplits(list){
+  const out = [], groups = new Map();
+  for (const t of list){
+    if (!t.splitId){ out.push(t); continue; }
+    let g = groups.get(t.splitId);
+    if (!g){ g = { ...t, parts: [] }; groups.set(t.splitId, g); out.push(g); }
+    g.parts.push(t);
+  }
+  for (const g of groups.values()){
+    g.parts.sort((a, b) => (a.splitIndex ?? 0) - (b.splitIndex ?? 0));
+    Object.assign(g, { id: g.parts[0].id, date: g.parts[0].date,
+      amount: fromCents(g.parts.reduce((c, p) => c + toCents(p.amount), 0)),
+      category: g.parts.map(p => p.category).join(' + ') });
+  }
+  return out;
+}
+
 /* ─── Corrections ─────────────────────────────
    fixDate: aligns a loose-matched ledger txn's date to the statement's
    posted date, so it strict-matches forever after.
@@ -559,7 +579,10 @@ function shiftISO(iso, days){
    derived (v3.0), so neither needs any balance repair. */
 async function fixDate(m){
   m.txn.date = m.csv.date;
-  await dbPut('transactions', m.txn);
+  for (const t of m.txn.parts || [m.txn]){        // v3.1: every part of a split
+    t.date = m.csv.date;
+    await dbPut('transactions', t);
+  }
   state.transactions.sort((a,b) => (b.date||'').localeCompare(a.date||''));
 }
 

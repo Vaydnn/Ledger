@@ -52,7 +52,8 @@ const CORE = [
   './js/settings.js',
   './js/lock.js',
   './js/appearance.js',
-  './js/payday.js'
+  './js/payday.js',
+  './js/tags.js'
 ];
 
 self.addEventListener('install', (e) => {
