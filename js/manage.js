@@ -166,12 +166,20 @@ export function openAccountsSheet(){
 
 /* FIX(v1.2): renames cascade through every store that keys on the name.
    NEW(v3.0): Close / Reopen / Merge, and delete only when unused. */
+// Placeholder for a card's closing day: the Auto (CC) bill's, if one tracks it.
+function billCloseHint(acct){
+  const b = acct && state.bills.find(x => x.recurrence === 'auto-cc' && x.linkedAccount === acct.name && x.closeDay);
+  return b ? `${b.closeDay} (from bill)` : 'e.g. 15';
+}
+
 function editAccount(id){
   const existing = id ? state.accounts.find(x => x.id === id) : null;
   const f = {
     name: existing?.name || '',
     type: existing?.type || 'Checking',
-    notes: existing?.notes || ''
+    notes: existing?.notes || '',
+    closeDay: existing?.closeDay ? String(existing.closeDay) : '',     // NEW(v3.1): card statement cycle
+    graceDays: existing?.graceDays != null ? String(existing.graceDays) : ''
   };
 
   function render(){
@@ -186,6 +194,12 @@ function editAccount(id){
           <span class="picker-chev">▾</span>
         </button>
       </div>
+      ${f.type === 'Credit Card' ? `
+        <div class="row-2">
+          <div class="field"><label>Statement closes (day)</label><input class="input" id="ae-close-day" type="number" min="1" max="31" inputmode="numeric" placeholder="${esc(billCloseHint(existing))}" value="${esc(f.closeDay)}" /></div>
+          <div class="field"><label>Payment due (days after)</label><input class="input" id="ae-grace" type="number" min="0" max="60" inputmode="numeric" placeholder="25" value="${esc(f.graceDays)}" /></div>
+        </div>
+        <div class="muted small" style="margin:-4px 0 12px;line-height:1.5;">Shows the statement balance (what avoids interest) next to the current balance on Home. Leave blank to use an Auto (CC) bill's dates.</div>` : ''}
       <div class="field"><label>Notes</label><input class="input" id="ae-notes" value="${esc(f.notes)}" /></div>
       <button class="btn" id="ae-save">Save</button>
       ${existing ? `
@@ -198,6 +212,8 @@ function editAccount(id){
     `;
     $('#ae-name').addEventListener('input', e => f.name = e.target.value);
     $('#ae-notes').addEventListener('input', e => f.notes = e.target.value);
+    $('#ae-close-day')?.addEventListener('input', e => f.closeDay = e.target.value);
+    $('#ae-grace')?.addEventListener('input', e => f.graceDays = e.target.value);
     $('#ae-type').addEventListener('click', () => {
       openPicker('Account Type', ACCOUNT_TYPES, f.type, (val) => {
         f.type = val;
@@ -237,6 +253,12 @@ function editAccount(id){
       notes: f.notes.trim(),
       order: existing?.order ?? state.accounts.length
     };
+    // NEW(v3.1): statement cycle (cards only; blank = from an Auto (CC) bill).
+    const cd = parseInt(f.closeDay, 10), gd = parseInt(f.graceDays, 10);
+    if (f.type === 'Credit Card' && cd >= 1 && cd <= 31){
+      obj.closeDay = cd;
+      obj.graceDays = gd >= 0 && gd <= 60 ? gd : 25;
+    } else { delete obj.closeDay; delete obj.graceDays; }
     await dbPut('accounts', obj);
     const i = state.accounts.findIndex(x => x.id === obj.id);
     if (i >= 0) state.accounts[i] = obj; else state.accounts.push(obj);

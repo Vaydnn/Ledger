@@ -458,5 +458,65 @@ const recon = await import('../js/reconcile.js');
   app.navigate('home'); await tick(20);
 }
 
+/* ── 33. Statement balance vs current ── */
+const stm = await import('../js/statement.js');
+{
+  await dbPut('accounts', { id:'a5', name:'Stmt Card', type:'Credit Card', active:true, order:5 });
+  // Before the statement closed (5 days ago): $100 + $50. After: +$30 charge, −$40 payment.
+  for (const [d, type, amount, extra] of [[-20,'Expense',100,{}], [-8,'Expense',50,{}], [-3,'Expense',30,{}], [-2,'CC Payment',40,{ fromAccount:'Checking', category:'CC Payment' }]]){
+    await dbPut('transactions', txn({ date: D(d), type, account:'Stmt Card', category:'Groceries', amount, ...extra }));
+  }
+  await loadState();
+  check('no cycle known → no statement figure', stm.statementInfo('Stmt Card') === null);
+
+  // Set the cycle on the card (Accounts → Edit).
+  const { openAccountsSheet } = await import('../js/manage.js');
+  openAccountsSheet(); await tick(30);
+  await click($(`#sheetBody .a-edit[data-id="a5"]`), 30);
+  check('a card has statement-cycle fields', !!$('#ae-close-day') && !!$('#ae-grace'));
+  const closeDay = util.addDays(new Date(), -5).getDate();
+  type('#ae-close-day', String(closeDay)); type('#ae-grace', '25');
+  await click($('#ae-save'), 80);
+  closeSheet(); await tick(20);
+  const card = state.accounts.find(a => a.name === 'Stmt Card');
+  check('saved on the account', card.closeDay === closeDay && card.graceDays === 25);
+
+  const s = stm.statementInfo('Stmt Card', T);
+  check('statement closed 5 days ago', s.closeIso === D(-5) && s.dueIso === D(20));
+  check('statement balance = $150 (what was owed when it closed)', s.statement === 150);
+  check('current balance = $140 (150 + 30 new − 40 paid)', s.current === 140);
+  check('still due from the statement = $110 (150 − 40 paid since)', s.remaining === 110);
+
+  app.navigate('home'); app.renderAll(); await tick(40);
+  const row = $(`#view-home .acct-row[data-acct="Stmt Card"]`);
+  check('Home shows the statement next to the current balance', !!row && /statement \$110\.00 due/.test(row.textContent) && /140\.00/.test(row.querySelector('.acct-bal').textContent));
+
+  // An Auto (CC) bill can pay the statement balance instead of the current one.
+  const { getBillAmount, openBillSheet } = await import('../js/bills.js');
+  const bill = { id:'b-stm', name:'Stmt Card bill', recurrence:'auto-cc', linkedAccount:'Stmt Card', fromAccount:'Checking', closeDay, graceDays: 25, active:true, paidMonths:{}, type:'CC Payment', account:'Stmt Card' };
+  await dbPut('bills', bill); await loadState();
+  check('auto-pay bill: current balance by default ($140)', getBillAmount(state.bills.find(b => b.id === 'b-stm')) === 140);
+  openBillSheet('b-stm'); await tick(30);
+  check('the bill offers "Statement balance"', !!$('#bf-ccamt'));
+  await click($('#bf-ccamt .seg-btn[data-v="statement"]'), 30);
+  await click($('#bf-save'), 80);
+  check('…saved; the bill now asks for $110', state.bills.find(b => b.id === 'b-stm').ccAmount === 'statement' && getBillAmount(state.bills.find(b => b.id === 'b-stm')) === 110);
+  check('past months still read the month-end balance', getBillAmount(state.bills.find(b => b.id === 'b-stm'), 2020, 1) === 0);
+
+  // Paying what's due → "statement paid".
+  await dbPut('transactions', txn({ date: T, type:'CC Payment', account:'Stmt Card', fromAccount:'Checking', category:'CC Payment', amount: 110 }));
+  await loadState();
+  check('paying it leaves nothing due', stm.statementInfo('Stmt Card').remaining === 0 && getBillAmount(state.bills.find(b => b.id === 'b-stm')) === 0);
+  app.renderAll(); await tick(30);
+  check('…and Home says the statement is paid', /statement paid ✓/.test($(`#view-home .acct-row[data-acct="Stmt Card"]`).textContent));
+
+  // Without its own cycle, a card uses its auto-pay bill's.
+  const live = state.accounts.find(a => a.name === 'Stmt Card');   // (loadState replaced the objects)
+  delete live.closeDay; delete live.graceDays;
+  check('no card cycle → the Auto (CC) bill\'s', stm.cardCycle('Stmt Card')?.source === 'bill' && stm.cardCycle('Stmt Card').closeDay === closeDay);
+  check('closing day clamps in short months', util.toLocalISO(stm.lastClose(31, '2027-02-27')) === '2027-01-31' && util.toLocalISO(stm.lastClose(31, '2027-02-28')) === '2027-02-28');
+  await dbDel('bills', 'b-stm'); await loadState();
+}
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('everyday tests');

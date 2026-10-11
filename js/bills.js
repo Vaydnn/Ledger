@@ -21,6 +21,7 @@ import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { renderCurrent } from './app.js';
 import { trashTxn, restoreTxn } from './trash.js';
 import { isWide } from './layout.js';   // NEW(v3.1)
+import { statementInfo } from './statement.js';   // NEW(v3.1)
 
 /* ── Paid state ─────────────────────────────────────────────────────── */
 // paidMonths maps 'YYYY-MM' → id of the payment transaction. A monthly bill
@@ -69,6 +70,12 @@ export function getBillAmount(bill, year, month){
   if (!bill.linkedAccount) return 0;
   const now = new Date();
   const isLive = year == null || (year === now.getFullYear() && month === now.getMonth() + 1);
+  // NEW(v3.1): "pay the statement balance" — what's still due from the last
+  // statement (the amount that avoids interest), not everything charged since.
+  if (isLive && bill.ccAmount === 'statement'){
+    const s = statementInfo(bill.linkedAccount);
+    if (s) return s.remaining;
+  }
   const bal = isLive ? balanceLatest(bill.linkedAccount) : balanceAt(bill.linkedAccount, year, month);
   return Math.max(0, Math.round(bal * 100) / 100);
 }
@@ -517,7 +524,8 @@ export function openBillSheet(billId){
     active: existing ? existing.active !== false : true,
     linkedAccount: existing?.linkedAccount || ccAccts[0]?.name || '',
     closeDay: existing?.closeDay || 15,
-    graceDays: existing?.graceDays != null ? existing.graceDays : 21
+    graceDays: existing?.graceDays != null ? existing.graceDays : 21,
+    ccAmount: existing?.ccAmount === 'statement' ? 'statement' : 'current'   // NEW(v3.1)
   };
 
   const acctOptionsForType = () => {
@@ -575,10 +583,19 @@ export function openBillSheet(billId){
             <div class="field"><label>Statement Closes (day)</label><input class="input" id="bf-close" type="number" min="1" max="31" inputmode="numeric" value="${esc(f.closeDay)}" /></div>
             <div class="field"><label>Grace Days</label><input class="input" id="bf-grace" type="number" min="0" max="60" inputmode="numeric" value="${esc(f.graceDays)}" /></div>
           </div>
+          <div class="field">
+            <label>Bill amount</label>
+            <div class="seg" id="bf-ccamt" role="tablist">
+              <button type="button" class="seg-btn ${f.ccAmount === 'current' ? 'active' : ''}" data-v="current">Current balance</button>
+              <button type="button" class="seg-btn ${f.ccAmount === 'statement' ? 'active' : ''}" data-v="statement">Statement balance</button>
+            </div>
+          </div>
           <div class="muted small" style="margin:-4px 0 14px;line-height:1.5;">
-            Amount auto-tracks the live running balance of the linked card.
+            ${f.ccAmount === 'statement'
+              ? 'Amount = what\'s still due from the last statement (closing day above) — paying that by the due date avoids interest.'
+              : 'Amount auto-tracks the live running balance of the linked card.'}
             Due day is computed from close + grace (e.g. close 15, grace 21 → due day 6 of next month).
-            When you mark it paid, a CC Payment is logged for the current balance.
+            When you mark it paid, a CC Payment is logged for that amount.
           </div>
         `}
       ` : `
@@ -642,6 +659,7 @@ export function openBillSheet(billId){
       });
       $('#bf-close').addEventListener('input', e => f.closeDay = clamp(parseInt(e.target.value)||1, 1, 31));
       $('#bf-grace').addEventListener('input', e => f.graceDays = clamp(parseInt(e.target.value)||0, 0, 60));
+      $$('#bf-ccamt .seg-btn').forEach(b => b.addEventListener('click', () => { f.ccAmount = b.dataset.v; render(); }));   // NEW(v3.1)
     } else if (!isAuto){
       $('#bf-amt').addEventListener('input', e => f.amount = e.target.value);
       if (isOnce) $('#bf-date').addEventListener('input', e => f.dueDate = e.target.value);
@@ -720,7 +738,8 @@ export function openBillSheet(billId){
         category: 'CC Payment',
         linkedAccount: f.linkedAccount,
         closeDay,
-        graceDays
+        graceDays,
+        ccAmount: f.ccAmount            // NEW(v3.1): 'current' | 'statement'
       });
     } else {
       let dueDay, dueDate;

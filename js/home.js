@@ -21,6 +21,7 @@ import { renderGoalsCard } from './goals.js'; // NEW(v2.0)
 import { preferredAccountFor } from './merchants.js'; // NEW(v3.0)
 import { renderSafeCard, wireSafeCard } from './payday.js'; // NEW(v3.1)
 import { renderRecurringCard, wireRecurringCard } from './recurring.js'; // NEW(v3.1)
+import { statementInfo } from './statement.js';                          // NEW(v3.1)
 
 /* NEW(v3.0): how an account's balance reads on Home. The old row stripped
    every minus sign — an overdrawn checking account (−$50) showed as $50, and
@@ -123,6 +124,17 @@ export function openHomeCustomizeSheet(){
 
 // Month swipe (v2.9.2) moved to app.js in v3.1 — shared by Home, Bills and
 // Activity (wireMonthSwipes).
+
+// NEW(v3.1): a card's statement next to its current balance (item 33).
+function statementMeta(a){
+  if (a.type !== 'Credit Card') return '';
+  const s = statementInfo(a.name);
+  if (!s || s.statement <= 0.004) return '';
+  const due = new Date(s.dueIso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return s.remaining > 0.004
+    ? ` · <span class="stmt-due">statement ${fmt(s.remaining)} due ${esc(due)}</span>`
+    : ` · <span class="stmt-paid">statement paid ✓</span>`;
+}
 
 // NEW(v3.1): Home's Recent card — what you just added (newest entry first,
 // whatever its date: a backdated receipt shows up too) or the latest by date.
@@ -240,7 +252,7 @@ export function renderHome(){
               <div class="acct-bullet ${cls}"></div>
               <div style="min-width:0;">
                 <div class="acct-name">${esc(a.name)}</div>
-                <div class="acct-meta">${esc(a.type)}</div>
+                <div class="acct-meta">${esc(a.type)}${isCurrentMonth ? statementMeta(a) : ''}</div>
               </div>
             </div>
             <div class="acct-bal ${isDebt ? 'cc' : ''}">${acctBalanceHTML(a, b)}</div>
