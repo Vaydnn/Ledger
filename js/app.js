@@ -10,11 +10,12 @@
 
 import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, esc, haptic } from './util.js';
 import { state, loadState, saveSelected, saveFlags, seedFromJSON, TAB_ID, purgeTombstones, scrubLegacyData } from './db.js';
-import { restoreJSON, maybeBackupNudge } from './manage.js';
+import { restoreJSON, restoreFromText, maybeBackupNudge } from './manage.js';
 import { initSheet, openSheet, closeSheet, isSheetOpen } from './sheet.js';
 import { renderHome } from './home.js';
 import { renderBills } from './bills.js';
-import { renderAdd } from './add.js';
+import { renderAdd, resetAddForm } from './add.js';
+import { openReconcileSheet, openReconcileWithFile } from './reconcile.js';   // NEW(v3.1): shortcuts + share target
 import { renderTxns, txnFilters, txnLayoutHandoff } from './txns.js';
 import { renderDebts } from './debts.js';
 import { renderMore } from './more.js';
@@ -22,6 +23,9 @@ import { maybeAutoSnapshot } from './networth.js'; // NEW(v2.0)
 import { purgeTrash } from './trash.js';           // NEW(v2.0)
 import { ensureAnchorsMigrated, migrateLegacyBalances } from './balances.js'; // NEW(v3.0)
 import { applyLayoutClasses, onLayoutChange } from './layout.js';          // NEW(v3.1)
+import { updateBadge, remindOnOpen } from './reminders.js';               // NEW(v3.1)
+import { lockNow, isLocked, whenUnlocked, setupAutoLock } from './lock.js'; // NEW(v3.1)
+import { applyTheme, setupPrivacy } from './appearance.js';               // NEW(v3.1)
 
 /* ─── NEW(v3.1): fold ↔ unfold continuity ─────────────────────────────
    Crossing the breakpoint re-renders the current view (Activity's list +
@@ -138,6 +142,7 @@ export function renderCurrent(){
   else if (state.view === 'txns')  renderTxns();
   else if (state.view === 'debts') renderDebts();
   else if (state.view === 'more')  renderMore();
+  updateBadge();                   // NEW(v3.1): app-icon badge follows every change
 }
 
 export function renderAll(){
@@ -315,6 +320,55 @@ function showFirstRun(){
   $('#fr-empty', el).addEventListener('click', dismiss);
 }
 
+/* ─── NEW(v3.1): launch parameters ─────────────────────────────
+   Long-press shortcuts on the app icon (manifest "shortcuts") open
+   ./index.html?action=add&type=Expense, ?view=bills, ?action=reconcile …
+   The query is consumed once and removed from the address so a reload
+   doesn't repeat it. (?share=1 — files shared into Ledger — item 20.) */
+const LAUNCH_VIEWS = new Set(['home', 'bills', 'txns', 'more', 'add', 'debts']);
+const ADD_TYPES = new Set(['Expense','Income','Refund','Investment','Transfer','CC Payment','Loan Payment','Balance Transfer']);
+export async function handleLaunchParams(search){
+  const p = new URLSearchParams(search || '');
+  if (![...p.keys()].length) return;
+  try { history.replaceState(history.state, '', location.pathname); } catch(e){}
+  const action = p.get('action'), view = p.get('view');
+  if (p.get('share') === '1'){ await receiveSharedFile(); return; }
+  if (action === 'add'){
+    const type = ADD_TYPES.has(p.get('type')) ? p.get('type') : 'Expense';
+    resetAddForm({ type });
+    navigate('add');
+    requestAnimationFrame(() => $('#f-amount')?.focus());
+  } else if (action === 'reconcile'){
+    navigate('more');
+    openReconcileSheet();
+  } else if (view && LAUNCH_VIEWS.has(view)){
+    navigate(view);
+  }
+}
+
+/* ─── NEW(v3.1): Share to Ledger ─────────────────────────────
+   sw.js parks a file shared from Android's share sheet in the
+   'ledger-share-inbox' cache and opens ?share=1. A statement CSV opens
+   Reconcile with the file loaded; a backup JSON offers to restore. */
+const SHARE_CACHE = 'ledger-share-inbox', SHARE_KEY = 'shared-file';
+export async function receiveSharedFile(){
+  let res = null, text = '', name = 'shared-file';
+  try {
+    const cache = await caches.open(SHARE_CACHE);
+    res = await cache.match(SHARE_KEY);
+    if (res){
+      name = decodeURIComponent(res.headers.get('X-File-Name') || name);
+      text = await res.text();
+      await cache.delete(SHARE_KEY);
+    }
+  } catch(e){ console.warn('Reading the shared file failed', e); }
+  if (!res){ toast('Nothing to import from that share'); return; }
+  navigate('more');
+  const looksJson = /\.json$/i.test(name) || /^\s*[{[]/.test(text);
+  if (looksJson) await restoreFromText(text, name, renderAll);
+  else openReconcileWithFile(name, text);
+}
+
 /* ─── Init ─────────────────────────── */
 async function init(){
   await loadState();
@@ -325,13 +379,25 @@ async function init(){
   // unset and it simply retries next launch.
   try { await ensureAnchorsMigrated(); } catch(e){ console.warn('Balance migration failed', e); }
 
+  applyTheme();                  // NEW(v3.1): dark / pure black
   if (isFreshInstall()) showFirstRun();
+  else lockNow();                // NEW(v3.1): app lock — no-op unless turned on
+  setupAutoLock();
 
   initSheet();
   applyLayoutClasses();          // NEW(v3.1): folded / unfolded / posture on <body>
   setupLayoutChanges();          // NEW(v3.1): fold ↔ unfold continuity
   wireMonthSwipes();             // v3.1: Home + Bills + Activity
+  setupPrivacy();                // NEW(v3.1): blur amounts (before the first render, so it's caught)
   renderAll();
+  // NEW(v3.1): app-icon shortcuts, shared files and the reminder wait for the
+  // lock — nothing opens on top of a locked app.
+  const afterUnlock = async () => {
+    if (!isFreshInstall()) await handleLaunchParams(location.search);
+    remindOnOpen().catch(e => console.warn('Reminder failed', e));    // foreground fallback
+  };
+  if (isLocked()) whenUnlocked().then(afterUnlock);
+  else await afterUnlock();
 
   // NEW(v2.0): opportunistic monthly net-worth snapshot + trash purge.
   // Both run after the first paint so they never block startup; failures

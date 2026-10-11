@@ -21,12 +21,13 @@
    ============================================================ */
 
 import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, uid, toast, esc, round2, fmt, busyGuard, downloadBlob, currentYm, JSON_ACCEPT } from './util.js';
-import { state, STORES, dbPut, dbDel, dbClear, replaceAllData, loadState, saveFlags, exportData, saveSnapshot, listSnapshots } from './db.js';
+import { state, STORES, dbPut, dbDel, dbClear, replaceAllData, loadState, saveFlags, exportData, saveSnapshot, listSnapshots, portableFlags } from './db.js';
 import { invalidateMerchantCache, categoryRuleKey } from './merchants.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { balanceLatest, firstActivityMonth } from './effects.js';
 import { migrateLegacyBalances, setAnchor, openBalancesSheet } from './balances.js';
 import { screenInfo, WIDE_MIN } from './layout.js';      // NEW(v3.1)
+import { applyTheme, applyPrivacy } from './appearance.js'; // NEW(v3.1)
 
 const ACCOUNT_TYPES = ['Checking','Savings','Credit Card','Loan'];
 const bulletCls = (type) => type === 'Credit Card' ? 'cc' : (type === 'Loan' ? 'loan' : 'checking');
@@ -683,8 +684,10 @@ async function applyBackup(data, reason){
   });
   await loadState();
   // NEW(v2.10.2): backed-up flags ride along, merged over this device's.
+  // v3.1: except the device-bound ones (app lock, reminders) — db.js.
   if (data.flags && typeof data.flags === 'object'){
-    state.flags = { ...state.flags, ...data.flags, id:'flags' };
+    state.flags = { ...state.flags, ...portableFlags(data.flags), id:'flags' };
+    applyTheme(); applyPrivacy();   // a backup's theme / privacy choice applies now
   }
   // Pre-v3 backups carry month-by-month starting balances — convert them
   // exactly the way a device upgrade does.
@@ -702,25 +705,33 @@ export function restoreJSON(onRestored){
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;
-    let data;
-    try { data = JSON.parse(await file.text()); }
-    catch { toast('Not a valid JSON file'); return; }
-    if (!data || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)){
-      toast("Doesn't look like a Ledger backup");
-      return;
-    }
-    const when = data.exportedAt ? ` from ${String(data.exportedAt).slice(0, 10)}` : '';
-    if (!confirm(`Restore this backup${when}? (${data.transactions.length.toLocaleString()} transactions)\n\nIt REPLACES all current data on this device. A snapshot of the current data is kept, so you can roll back from More → Backup & Restore.`)) return;
-    try {
-      await applyBackup(data, 'Before restoring ' + file.name);
-      if (typeof onRestored === 'function') onRestored();
-      toast('Backup restored');
-    } catch (e){
-      console.error(e);
-      toast('Restore failed — nothing was changed. ' + (e.message || ''));
-    }
+    await restoreFromText(await file.text(), file.name, onRestored);
   };
   input.click();
+}
+
+// Shared by the file picker and (v3.1) a backup shared into Ledger from
+// Android's share sheet. Validates, confirms, restores atomically.
+export async function restoreFromText(text, fileName, onRestored){
+  let data;
+  try { data = JSON.parse(text); }
+  catch { toast('Not a valid JSON file'); return false; }
+  if (!data || !Array.isArray(data.accounts) || !Array.isArray(data.transactions)){
+    toast("Doesn't look like a Ledger backup");
+    return false;
+  }
+  const when = data.exportedAt ? ` from ${String(data.exportedAt).slice(0, 10)}` : '';
+  if (!confirm(`Restore this backup${when}? (${data.transactions.length.toLocaleString()} transactions)\n\nIt REPLACES all current data on this device. A snapshot of the current data is kept, so you can roll back from More → Backup & Restore.`)) return false;
+  try {
+    await applyBackup(data, 'Before restoring ' + fileName);
+    if (typeof onRestored === 'function') onRestored();
+    toast('Backup restored');
+    return true;
+  } catch (e){
+    console.error(e);
+    toast('Restore failed — nothing was changed. ' + (e.message || ''));
+    return false;
+  }
 }
 
 export async function openBackupSheet(onChanged){

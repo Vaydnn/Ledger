@@ -340,12 +340,21 @@ export async function saveSelected(){
 // v1/v2 backups (startingBalances, no anchors) still restore: manage.js runs
 // the same migration a live device runs on upgrade.
 export const BACKUP_VERSION = 3;
+// NEW(v3.1): flags tied to THIS phone — the app lock (its fingerprint
+// credential lives in this phone's authenticator), notification state.
+// They never go into a backup and a restore never overwrites them.
+export const DEVICE_FLAGS = ['lock', 'reminders', 'lastReminderDay', 'lastDailySnapshot'];
+export function portableFlags(flags){
+  const out = { ...(flags || {}) };
+  for (const k of DEVICE_FLAGS) delete out[k];
+  return out;
+}
 export function exportData(){
   return {
     version: BACKUP_VERSION,
     app: 'ledger',
     exportedAt: new Date().toISOString(),
-    flags: { ...state.flags },
+    flags: portableFlags(state.flags),
     accounts: state.accounts,
     categories: state.categories,
     budgets: state.budgets,

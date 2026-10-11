@@ -18,6 +18,7 @@ import { openForecastSheet } from './forecast.js';
 import { openReconcileSheet } from './reconcile.js'; // NEW(v2.0)
 import { openGoalsSheet } from './goals.js';         // NEW(v2.0)
 import { openTrashSheet } from './trash.js';         // NEW(v2.0)
+import { openSettingsSheet } from './settings.js';   // NEW(v3.1)
 
 export function renderMore(){
   const v = $('#view-more');
@@ -88,6 +89,10 @@ export function renderMore(){
       <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg></span>Trash</span>
       <span class="arrow">›</span>
     </button>
+    <button class="menu-item" data-act="settings">
+      <span class="l"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></span>Settings</span>
+      <span class="arrow">›</span>
+    </button>
     <button class="menu-item" data-act="reset">
       <span class="l"><span class="ico" style="color:var(--red);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 6h18M8 6V4h8v2M5 6l1 14h12l1-14"/></svg></span>Reset All Data</span>
       <span class="arrow">›</span>
@@ -122,6 +127,7 @@ function moreAction(act){
     case 'balances':    openBalancesSheet(); break;
     case 'backup':      openBackupSheet(renderAll); break;    // NEW(v3.0): save / share / restore / roll back
     case 'reset':       resetData(); break;
+    case 'settings':    openSettingsSheet(); break;           // NEW(v3.1)
     case 'about':       openAboutSheet(); break;
   }
 }

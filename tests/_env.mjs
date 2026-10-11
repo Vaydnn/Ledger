@@ -45,7 +45,7 @@ export async function bootEnv(opts = {}){
   const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8')
     .replace(/<script[^>]*src=[^>]*><\/script>/g, '');
   const dom = new JSDOM(html, { url: opts.url || 'https://ledger.test/' });
-  for (const k of ['window','document','HTMLElement','Node','CustomEvent','File']) globalThis[k] = dom.window[k];
+  for (const k of ['window','document','HTMLElement','Node','CustomEvent','File','MutationObserver']) globalThis[k] = dom.window[k];
   globalThis.localStorage = dom.window.localStorage;
   Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
   globalThis.location = dom.window.location;

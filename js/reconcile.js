@@ -114,20 +114,41 @@ function pickFile(){
   input.onchange = async () => {
     const file = input.files[0];
     if (!file) return;
-    try {
-      const text = await file.text();
-      const rows = parseStatementCSV(text);
-      if (!rows.length){ toast('No transactions found in that file'); return; }
-      recState.rows = rows;
-      recState.fileName = file.name;
-      recState.flipSigns = false;
-      renderResults();
-    } catch(e){
-      console.error(e);
-      toast('Could not read that file: ' + (e.message || 'unknown error'));
-    }
+    if (loadStatement(file.name, await file.text())) renderResults();
   };
   input.click();
+}
+
+// Parse a statement into recState. false (with a toast) if unreadable.
+function loadStatement(name, text){
+  try {
+    const rows = parseStatementCSV(text);
+    if (!rows.length){ toast('No transactions found in that file'); return false; }
+    recState.rows = rows;
+    recState.fileName = name;
+    recState.flipSigns = false;
+    return true;
+  } catch(e){
+    console.error(e);
+    toast('Could not read that file: ' + (e.message || 'unknown error'));
+    return false;
+  }
+}
+
+/* NEW(v3.1): a statement shared into Ledger from Android's share sheet.
+   The file is already here, so the sheet opens on the account step with
+   one button to run it. */
+export function openReconcileWithFile(name, text){
+  if (!loadStatement(name, text)) return false;
+  openReconcileSheet();
+  const notice = document.createElement('div');
+  notice.className = 'debt-good';
+  notice.style.marginBottom = '12px';
+  notice.textContent = `Shared: ${name} (${recState.rows.length} rows). Check the account, then Reconcile.`;
+  $('#sheetBody h2')?.after(notice);
+  const run = $('#rc-rerun');
+  if (run){ run.textContent = `Reconcile ${name}`; run.classList.remove('secondary'); }
+  return true;
 }
 
 /* ─── CSV parsing ─────────────────────────── */

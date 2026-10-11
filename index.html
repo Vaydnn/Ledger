@@ -1299,6 +1299,73 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
   border:1px solid var(--line-2);border-radius:999px;padding:1px 7px;margin-left:8px;flex-shrink:0;
 }
 
+/* ── NEW(v3.1): app lock (lock.js) ─────────────────────────── */
+.lock{
+  position:fixed;inset:0;z-index:400;background:var(--bg);
+  display:grid;place-items:center;padding:24px 16px calc(24px + env(safe-area-inset-bottom));
+  overflow-y:auto;
+}
+.lock-box{width:100%;max-width:300px;text-align:center;}
+.lock-mark{font-family:"Instrument Serif",serif;font-style:italic;font-size:40px;line-height:1;margin-bottom:10px;}
+.lock-mark span{color:var(--ember);}
+.lock-msg{font-size:13px;color:var(--text-2);min-height:1.4em;margin-bottom:16px;}
+.lock-dots{display:flex;justify-content:center;gap:12px;margin-bottom:22px;}
+.lock-dots i{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--text-3);}
+.lock-dots i.on{background:var(--ember);border-color:var(--ember);}
+.lock-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;justify-items:center;}
+.lock-key{
+  width:68px;height:68px;border-radius:50%;background:var(--bg-2);border:1px solid var(--line);
+  font-family:"JetBrains Mono",monospace;font-size:24px;color:var(--text);
+  display:grid;place-items:center;
+}
+.lock-key:active{background:var(--bg-3);}
+.lock-bio{color:var(--ember);}
+.lock-bio svg{width:30px;height:30px;}
+.lock-links{margin-top:18px;}
+.lock.shake .lock-dots{animation:lockShake .35s;}
+@keyframes lockShake{20%,60%{transform:translateX(-8px);}40%,80%{transform:translateX(8px);}}
+/* Locked: nothing of the app is visible or reachable underneath. "Shield"
+   hides the content while Ledger is in the background (app switcher). */
+body.locked > :not(#lock):not(.splash),
+body.shield > :not(#lock):not(.splash){visibility:hidden !important;}
+body.shield::after{
+  content:"Ledger.";position:fixed;inset:0;z-index:399;background:var(--bg);color:var(--ember);
+  display:grid;place-items:center;font-family:"Instrument Serif",serif;font-style:italic;font-size:54px;
+}
+body.locked::after{content:none;}
+
+/* ── NEW(v3.1): privacy mode (appearance.js) ─────────────────────────── */
+.eye-btn{
+  display:none;width:32px;height:30px;border-radius:999px;place-items:center;
+  background:var(--bg-2);border:1px solid var(--line);color:var(--text-2);
+}
+.eye-btn svg{width:17px;height:17px;}
+.eye-btn .eye-open{display:none;}
+.eye-btn[aria-pressed="true"] .eye-open{display:block;}
+.eye-btn[aria-pressed="true"] .eye-shut{display:none;}
+body.privacy .eye-btn{display:grid;}
+body.privacy:not(.pv-all) .pv:not(.pv-show){
+  filter:blur(6px);-webkit-user-select:none;user-select:none;cursor:pointer;
+}
+body.privacy .pv{transition:filter .18s;border-radius:4px;}
+
+/* ── NEW(v3.1): pure-black theme — OLED pixels off behind the app ──────── */
+:root[data-theme="black"]{
+  --bg:#000;
+  --bg-2:#0d0c0b;
+  --bg-3:#181614;
+  --line:#201e1b;
+  --line-2:#2c2925;
+}
+:root[data-theme="black"] body{background:#000;}
+:root[data-theme="black"] .appbar{background:linear-gradient(to bottom, #000 60%, rgba(0,0,0,0));}
+:root[data-theme="black"] nav.tabs{background:rgba(0,0,0,.94);}
+:root[data-theme="black"] .hero,
+:root[data-theme="black"] .debt-card,
+:root[data-theme="black"] .real-card,
+:root[data-theme="black"] .migrate-banner,
+:root[data-theme="black"] .about-brand{background:var(--bg-2);}
+
 </style>
 </head>
 <body>
@@ -1308,6 +1375,10 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
 <header class="appbar">
   <h1>Ledger<span class="dot">.</span></h1>
   <div class="month">
+    <button class="eye-btn" id="privacyEye" type="button" aria-label="Show amounts" aria-pressed="false">
+      <svg class="eye-shut" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A9.9 9.9 0 0 1 12 5c5 0 9 4.5 10 7a13 13 0 0 1-3.2 4.2M6.6 6.6C4.4 8 2.8 10.2 2 12c1 2.5 5 7 10 7a9.6 9.6 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+      <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12c1-2.5 5-7 10-7s9 4.5 10 7c-1 2.5-5 7-10 7S3 14.5 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
     <button class="month-pick" id="monthPick"></button>
   </div>
 </header>

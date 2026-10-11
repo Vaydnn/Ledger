@@ -10,5 +10,25 @@
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
-  ]
+  ],
+  "shortcuts": [
+    { "name": "Add expense", "short_name": "Expense", "url": "./index.html?action=add&type=Expense", "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Add income", "short_name": "Income", "url": "./index.html?action=add&type=Income", "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Bills", "short_name": "Bills", "url": "./index.html?view=bills", "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Reconcile a statement", "short_name": "Reconcile", "url": "./index.html?action=reconcile", "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Activity", "short_name": "Activity", "url": "./index.html?view=txns", "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] }
+  ],
+  "share_target": {
+    "action": "./share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "files": [{
+        "name": "file",
+        "accept": ["text/csv", "text/comma-separated-values", "application/csv", "application/vnd.ms-excel", "text/plain", "application/json", "application/octet-stream", ".csv", ".CSV", ".json"]
+      }]
+    }
+  }
 }
