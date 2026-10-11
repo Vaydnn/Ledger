@@ -116,18 +116,21 @@ check('asked-state is persisted in flags', !!savedFlags?.categoryRuleAsked?.['Ex
 /* ── 5. fuzzy merchant matching ── */
 {
   const mer = await import('../js/merchants.js');
-  for (const [d, cat] of [['Target Optical','Health'],['Pizza','Restaurants'],['Joe\'s Coffee Roasters','Restaurants'],['Walmart','Groceries'],['Dutch Bros','Restaurants']]){
+  // Synthetic merchants (same shapes as the real-world cases: a short name
+  // that's a prefix of a longer one, a short name + word break, a long
+  // prefix, a brand written without its space).
+  for (const [d, cat] of [['Acmeco Optical','Health'],['Taco','Restaurants'],['Joe\'s Coffee Roasters','Restaurants'],['Megamart','Groceries'],['Bean Bros','Restaurants']]){
     await dbPut('transactions', { id:'fz-'+d, date:'2026-09-01', type:'Expense', account:'Citi', category:cat, amount:5, description:d });
   }
   await loadState();
   const f = (n) => mer.findMerchantFuzzy(n)?.display || null;
-  check('"TARGET" does not match "Target Optical"', f('TARGET') === null, f('TARGET'));
-  check('"PIZZA HUT" still matches "Pizza" at a word break', f('PIZZA HUT') === 'Pizza', f('PIZZA HUT'));
-  check('"PIZZAHUT" (no break) does not match short "Pizza"', f('PIZZAHUT') === null, f('PIZZAHUT'));
-  check('long merchant prefix still matches ("WALMART SUPERCENTER")', f('WALMART SUPERCENTER') === 'Walmart', f('WALMART SUPERCENTER'));
-  check('squashed brand still matches ("DUTCHBROS COFFEE")', f('DUTCHBROS COFFEE') === 'Dutch Bros', f('DUTCHBROS COFFEE'));
+  check('"ACMECO" does not match "Acmeco Optical"', f('ACMECO') === null, f('ACMECO'));
+  check('"TACO SHACK" still matches "Taco" at a word break', f('TACO SHACK') === 'Taco', f('TACO SHACK'));
+  check('"TACOSHACK" (no break) does not match short "Taco"', f('TACOSHACK') === null, f('TACOSHACK'));
+  check('long merchant prefix still matches ("MEGAMART SUPERCENTER")', f('MEGAMART SUPERCENTER') === 'Megamart', f('MEGAMART SUPERCENTER'));
+  check('squashed brand still matches ("BEANBROS COFFEE")', f('BEANBROS COFFEE') === 'Bean Bros', f('BEANBROS COFFEE'));
   check('near-complete prefix matches ("JOES COFFEE ROAST")', f('JOES COFFEE ROAST') === "Joe's Coffee Roasters", f('JOES COFFEE ROAST'));
-  check('exact still wins', f('target optical') === 'Target Optical');
+  check('exact still wins', f('acmeco optical') === 'Acmeco Optical');
 }
 
 check('zero captured errors', errors.length === 0, errors[0]);

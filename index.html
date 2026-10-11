@@ -1404,6 +1404,7 @@ body.shield::after{
   display:grid;place-items:center;font-family:"Instrument Serif",serif;font-style:italic;font-size:54px;
 }
 body.locked::after{content:none;}
+body.locked, body.shield{overflow:hidden;}   /* nothing to scroll behind the lock */
 
 /* ── NEW(v3.1): privacy mode (appearance.js) ─────────────────────────── */
 .eye-btn{
