@@ -77,7 +77,7 @@ When we change things, you'll have a new set of files. From the repo folder:
 ```bash
 # replace the changed files (or the whole folder contents), then:
 git add -A
-git commit -m "v3.0.0"
+git commit -m "v3.1.0"
 git push
 ```
 
@@ -85,6 +85,16 @@ git push
 - On the phone, the app shows **"Update ready · Reload"** once the new
   version has installed (the version number in More → About tells you
   what's live).
+- **Manifest changes** (v3.1 added app-icon shortcuts and "Share to
+  Ledger") reach Android only when it refreshes the installed app, which
+  can take a day or more. To get them now: take a backup, remove the
+  home-screen app, open the site in the browser, *Add to Home screen*
+  again. The data stays (same site), but keep the backup anyway.
+- **Permissions** the v3.1 features ask for, the first time you turn
+  them on (More → Settings): notifications (bill reminders), fingerprint
+  (app lock). Background reminders also depend on the browser's
+  Periodic Background Sync, which Chromium grants to installed apps you
+  use regularly; when it isn't granted, reminders show when you open Ledger.
 
 **Tiny edits without the PC:** any single file can be edited straight in
 the GitHub web UI (open file → pencil icon → commit), including from the
@@ -115,5 +125,5 @@ Requires Node 20+ (`winget install OpenJS.NodeJS.LTS` on Windows).
 
 ```bash
 npm install   # once
-npm test      # 17 suites, 363 checks, all synthetic data
+npm test      # 23 suites, 775 checks, all synthetic data
 ```

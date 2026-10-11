@@ -3,13 +3,14 @@
    No imports. Every other module depends on this one.
    ============================================================ */
 
-// v3.0.0 — balances are derived from transactions + pinned openings (no more
-// stored cascade), accounts can be closed / merged / recovered, Excel import/
-// export removed (JSON only), atomic restore with rollback snapshots, smarter
-// reconcile for raw-description statements (Citi), per-category default
-// accounts, merchant-level recurring detection, refunds offset budgets.
+// v3.1.0 — built for the Fold (list + detail, nav rail, side-panel sheets,
+// postures, number pad, customizable Home), Android integration (shortcuts,
+// share target, bill reminders, badge, app lock, privacy mode, pure black)
+// and everyday features (safe to spend, splits, tags, recurring prompts,
+// reconcile memory, statement balances, charts, rollover budgets, daily
+// snapshots). v3.0.0: derived balances, account lifecycle, JSON-only backups.
 // See README.md for the full list.
-export const APP_VERSION = '3.0.0';
+export const APP_VERSION = '3.1.0';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data

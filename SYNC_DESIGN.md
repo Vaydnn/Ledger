@@ -12,6 +12,16 @@ IndexedDB stays the source of truth on each device.
 > name-FK "orphan scan" mitigation **shipped** (Accounts → Missing →
 > Recover). New device-local stores: `snapshots` (pre-restore copies; never
 > synced).
+>
+> **v3.1 notes for sync:** transactions gained `createdAt` (first write),
+> `splitId`/`splitIndex`/`splitTotal` (a split = several ordinary records —
+> sync them as records; deleting a split deletes every part, each with its
+> own tombstone), `tags`, and `cleared`. Accounts gained `closeDay`/
+> `graceDays`; budgets `rollover`; auto-CC bills `ccAmount`. `db.js
+> DEVICE_FLAGS` (`lock`, `reminders`, `lastReminderDay`,
+> `lastDailySnapshot`) are per-phone and must never sync; other flags
+> (theme, privacy, reconcileMemory, payday, homeLayout…) are portable.
+> Snapshots now also include `kind: 'daily'` copies — still device-local.
 
 ## What v2.3 already laid down
 

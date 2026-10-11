@@ -1,8 +1,57 @@
-# Ledger PWA · v3.0.0
+# Ledger PWA · v3.1.0
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
-**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (17 suites, 363 checks, synthetic data).
+**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (23 suites, 775 checks, synthetic data).
+
+## What's new in v3.1.0
+
+No data migration — v3.0 data opens as-is (new fields are optional). After updating, **reinstall the home-screen app once** if the app-icon shortcuts or "Share to Ledger" don't appear: Android reads those from the manifest at install time.
+
+### Built for the Fold
+- **Unfolded (≥ 700 px)** Ledger uses the width: a **navigation rail** on the left; **Activity is list + detail** (tap a transaction, it opens beside the list); the **Add form gets a context column** (balance before → after, a possible-duplicate warning, recent entries at that merchant/category); **Bills shows a month calendar**; **Reconcile shows statement-only and ledger-only side by side**; sheets open as a **side panel** (or a centered dialog for wide ones — Reconcile, Year View, Forecast, Charts) with a close button.
+- **Fold ↔ unfold keeps your place**: scroll position, focus, the selected transaction (sheet ↔ pane), and month all carry over.
+- **Half-folded postures**: tabletop keeps the numbers on the top half; book posture splits at the hinge.
+- **Number pad** for amounts (with + / − to add up a receipt, hold ⌫ to clear, ✓ to save), **Today / Yesterday** chips. Prefer the system keyboard? More → Settings.
+- **Customizable Home**: reorder, hide, or collapse any card (⌄ on a card, or *Customize Home*).
+- **Swipe left/right** to change month on Home, Bills and Activity.
+- More → About shows this screen's size and posture.
+
+### Android
+- **App-icon shortcuts** (long-press the icon): Add expense, Add income, Bills, Reconcile, Activity.
+- **Share to Ledger**: share a statement CSV from Files/email → Reconcile opens with it loaded; share a backup JSON → offers to restore.
+- **Bill reminders**: a notification when bills are due soon or overdue — in the background where the browser allows it (Periodic Background Sync), otherwise when you open Ledger (once a day). **App-icon badge** = bills overdue or due today.
+- **App lock**: fingerprint (the phone's own biometric prompt, via WebAuthn) with a backup PIN; locks on launch and after time away (30 s – 15 min). Forgot the PIN? Unlock with one of your backup files. The lock hides the app from someone holding your unlocked phone; the data itself isn't encrypted. Lock settings never go into backups.
+- **Privacy mode**: dollar amounts blurred until tapped (the eye in the top bar shows them all); bill notifications leave amounts out.
+- **Pure-black theme** for the OLED screens.
+- **More → Settings** gathers all of these.
+
+### Everyday
+- **Safe to spend per day until payday** (Home): checking, minus bills and recurring charges due before payday, minus the cards you subtract in Real available, spread over the days left. Payday is detected from your paycheck deposits (split deposits on the same day count once) or set by hand.
+- **Log again** on any transaction; Home's **Recent** shows what you *just added* (or the latest by date).
+- **Split transactions**: one charge across several categories (Add → *Split across categories*). Stored as linked ordinary transactions, so budgets and reports just work; Reconcile matches a split to its single statement line; edit/delete/undo act on the whole split.
+- **Tags** (#trip, #work…): add them in the Add form; `#tag` in Activity search, tag chips filter and total; More → **Tags** lists them all.
+- **"Usually charged around now"**: a merchant charged on a steady monthly/yearly rhythm that's due (and not logged) gets *Log it / Edit first / Not now* on Home. Bills take precedence.
+- **Reconcile memory**: the account is remembered per kind of statement file; matched entries can be **marked cleared** (✓ in Activity — editing the amount/date/account clears it); each account remembers how far it's **reconciled through**.
+- **Statement balance vs current** for cards: set a card's closing day (Accounts → card) or use its Auto (CC) bill's; Home shows what's still due from the last statement, and an Auto (CC) bill can ask for the **statement balance** (what avoids interest).
+- **More → Charts**: spending by month (6/12/24 months, average line), category trends, and a full-size net worth chart (6M / 1Y / All).
+- **Rollover budgets**: per budget, what's left (or overspent) carries into next month, fresh each January. Home's budget rows show **$/day left** this month.
+- **Daily snapshots**: one a day when anything changed, the last 7 kept (apart from the 3 pre-restore ones) — roll back from Backup & Restore. The backup reminder now **shares (or saves) the backup in one tap**.
+
+### Fixes
+- Editing a transaction on a **closed account** no longer swaps the account silently; bills keep their own closed accounts too.
+- The **"Always use this card?"** prompt is asked once per category (and never when a rule already exists).
+- **File pickers** list `.CSV`/`.JSON` files Android reports with odd types (Drive downloads, uppercase extensions).
+- A paid-off card reads **$0.00** (was "−$0.00").
+- **Merchant matching** is stricter for short names (no more "Ab" matching "Abc Market").
+- Reconcile's "card's usual category" counts back from the statement's dates (was today's — older statements guessed from the wrong habits).
+
+### Under the hood
+- New modules: `layout`, `reminders` + `remind-core` (shared with the service worker), `settings`, `lock`, `appearance`, `payday`, `tags`, `recurring`, `statement`, `charts`.
+- Service worker: share-target POST handler, periodic-sync reminders, notification clicks; navigations with a query (shortcuts) are served the cached app. A test checks every `js/` module is precached.
+- `createdAt` is stamped on transactions when first written (older ones keep their last-write time).
+- Device-only flags (`lock`, `reminders`, …) are left out of backups and never overwritten by a restore.
+- New suites: `fold`, `android`, `sw` (node vm sandbox), `lock`, `everyday`, `v31fixes`. Date-dependent features were run at month/year ends, Feb 28/29 and DST changes.
 
 ## What's new in v3.0.0
 
