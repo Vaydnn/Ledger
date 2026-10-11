@@ -8,8 +8,8 @@
    both modules are fully loaded.
    ============================================================ */
 
-import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, esc, haptic } from './util.js';
-import { state, loadState, saveSelected, saveFlags, seedFromJSON, TAB_ID, purgeTombstones, scrubLegacyData } from './db.js';
+import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, esc, haptic, today } from './util.js';
+import { state, loadState, saveSelected, saveFlags, seedFromJSON, TAB_ID, purgeTombstones, scrubLegacyData, maybeDailySnapshot } from './db.js';
 import { restoreJSON, restoreFromText, maybeBackupNudge } from './manage.js';
 import { initSheet, openSheet, closeSheet, isSheetOpen } from './sheet.js';
 import { renderHome } from './home.js';
@@ -403,6 +403,7 @@ async function init(){
   // Both run after the first paint so they never block startup; failures
   // are non-fatal.
   maybeAutoSnapshot().catch(e => console.warn('Auto snapshot failed', e));
+  if (!isFreshInstall()) maybeDailySnapshot(today()).catch(e => console.warn('Daily snapshot failed', e));   // NEW(v3.1)
   purgeTrash();
   purgeTombstones();                 // NEW(v2.3)
   scrubLegacyData().catch(e => console.warn('Scrub failed', e)); // NEW(v2.3): one-time

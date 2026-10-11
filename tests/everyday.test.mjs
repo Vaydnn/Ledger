@@ -615,5 +615,54 @@ const bud = await import('../js/budgets.js');
   await dbDel('budgets', 'bu2'); await dbDel('budgets', 'bu1'); await loadState();
 }
 
+/* ── 36. Daily snapshots (keep 7) + one-tap share from the backup reminder ── */
+{
+  const dbm = await import('../js/db.js');
+  const dailies = async () => (await dbm.listSnapshots()).filter(s => s.kind === 'daily');
+  const s1 = await dbm.maybeDailySnapshot('2030-01-01');
+  check('first open of the day takes a daily snapshot', !!s1 && s1.kind === 'daily' && s1.reason === 'Daily' && s1.txnCount === state.transactions.length);
+  check('…once a day', (await dbm.maybeDailySnapshot('2030-01-01')) === null && (await dailies()).length === 1);
+  check('…and not again when nothing changed', (await dbm.maybeDailySnapshot('2030-01-02')) === null && state.flags.lastDailySnapshot === '2030-01-02');
+  // Two safety snapshots (as a restore would take) + 9 changed days.
+  await dbm.saveSnapshot('Before restoring a.json'); await dbm.saveSnapshot('Before restoring b.json');
+  for (let d = 3; d <= 11; d++){
+    await dbPut('transactions', txn({ date: D(-1), type:'Expense', account:'Checking', category:'Groceries', amount: d, description:'snap day ' + d }));
+    await loadState();
+    await dbm.maybeDailySnapshot(`2030-01-${String(d).padStart(2, '0')}`);
+  }
+  const all = await dbm.listSnapshots();
+  check('the newest 7 daily snapshots are kept', (await dailies()).length === 7 && (await dailies())[0].txnCount === state.transactions.length);
+  check('…without pushing out the safety snapshots', all.filter(s => s.kind !== 'daily').length === 2);
+  check('the "last daily" marker stays on this device', !('lastDailySnapshot' in dbm.exportData().flags));
+
+  // Roll back to a daily snapshot from Backup & Restore.
+  const { openBackupSheet, maybeBackupNudge } = await import('../js/manage.js');
+  const oldest = (await dailies()).at(-1);
+  await openBackupSheet(() => {}); await tick(30);
+  check('Backup & Restore lists the daily snapshots', $$('#sheetBody .bk-roll').length === 9 && /once a day/.test($('#sheetBody').textContent));
+  await click($(`#sheetBody .bk-roll[data-id="${oldest.id}"]`), 400);
+  check('rolling back to a daily snapshot restores it', state.transactions.length === oldest.txnCount);
+  closeSheet(); await tick(20);
+
+  // Backup reminder → one tap.
+  state.flags.lastBackupAt = Date.now() - 40 * 86400000; state.flags.lastBackupNudge = 0;
+  await maybeBackupNudge(); await tick(1500);
+  check('no share sheet available → "Save now"', /Backup is 40 days old/.test($('#toast').textContent) && $('#toast-act')?.textContent === 'Save now');
+  let shared = null;
+  navigator.canShare = () => true;
+  navigator.share = async (d) => { shared = d; };
+  state.flags.lastBackupNudge = 0;
+  await maybeBackupNudge(); await tick(1500);
+  check('with a share sheet → "Share now"', $('#toast-act')?.textContent === 'Share now');
+  await click($('#toast-act'), 120);
+  const readFile = (f) => new Promise(r => { const fr = new dom.window.FileReader(); fr.onload = () => r(fr.result); fr.readAsText(f); });   // jsdom's File has no .text()
+  check('one tap shares today\'s backup file', shared?.files?.[0]?.name === `ledger-backup-${T}.json` && JSON.parse(await readFile(shared.files[0])).app === 'ledger');
+  check('…and counts as backed up', Date.now() - state.flags.lastBackupAt < 60000);
+  state.flags.lastBackupNudge = 0;
+  await maybeBackupNudge(); await tick(1500);
+  check('no nag right after a backup', state.flags.lastBackupNudge === 0 && !/days old|No backup yet/.test($('#toast').textContent));
+  delete navigator.canShare; delete navigator.share;
+}
+
 check('zero captured errors', errors.length === 0, errors[0]);
 done('everyday tests');

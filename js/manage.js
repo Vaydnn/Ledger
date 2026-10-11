@@ -20,8 +20,8 @@
      can be rolled back.
    ============================================================ */
 
-import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, uid, toast, esc, round2, fmt, busyGuard, downloadBlob, currentYm, JSON_ACCEPT } from './util.js';
-import { state, STORES, dbPut, dbDel, dbClear, replaceAllData, loadState, saveFlags, exportData, saveSnapshot, listSnapshots, portableFlags } from './db.js';
+import { $, $$, APP_VERSION, DEFAULT_CATEGORIES, monthAbbr, alphaSort, alphaSortBy, today, uid, toast, toastAction, esc, round2, fmt, busyGuard, downloadBlob, currentYm, JSON_ACCEPT } from './util.js';
+import { state, STORES, dbPut, dbDel, dbClear, replaceAllData, loadState, saveFlags, exportData, saveSnapshot, listSnapshots, portableFlags, DAILY_KEEP } from './db.js';
 import { invalidateMerchantCache, categoryRuleKey } from './merchants.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { balanceLatest, firstActivityMonth } from './effects.js';
@@ -645,9 +645,12 @@ export async function maybeBackupNudge(){
   if (Date.now() - lastNudge < 7 * 86400000) return;
   state.flags.lastBackupNudge = Date.now();
   await saveFlags();
-  setTimeout(() => toast(last
-    ? `Backup is ${Math.floor(ageDays)} days old — More → Backup & Restore`
-    : 'No backup yet — More → Backup & Restore'), 1400);
+  // NEW(v3.1): one tap — straight to the share sheet (Drive, email…), or a
+  // saved file where sharing isn't available.
+  const msg = last ? `Backup is ${Math.floor(ageDays)} days old` : 'No backup yet';
+  setTimeout(() => canShareBackup()
+    ? toastAction(msg, 'Share now', () => shareBackup(), 12000)
+    : toastAction(msg, 'Save now', () => backupJSON(), 12000), 1400);
 }
 
 function backupFile(){
@@ -770,7 +773,7 @@ export async function openBackupSheet(onChanged){
     <button class="btn ghost" id="bk-restore" style="margin-top:10px;">Restore from a backup file…</button>
 
     <div class="section-label">Automatic snapshots</div>
-    <div class="muted small" style="margin-bottom:8px;line-height:1.5;">Taken on this device right before anything replaces your data. The newest 3 are kept.</div>
+    <div class="muted small" style="margin-bottom:8px;line-height:1.5;">Taken on this device once a day when something changed (the last ${DAILY_KEEP} kept) and right before anything replaces your data (the last 3). They stay on this phone — keep a backup file too.</div>
     ${snaps.length ? snaps.map(s => `
       <div class="rec-row">
         <div style="min-width:0;flex:1;">

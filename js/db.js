@@ -380,15 +380,43 @@ export function exportData(){
 /* ── NEW(v3.0): automatic snapshots ────────────────────────────────────
    Before anything replaces the whole ledger (restore, sample data), the
    current data is copied into the device-local `snapshots` store. The
-   newest SNAPSHOT_KEEP survive; Backup & Restore lists them for rollback. */
+   newest SNAPSHOT_KEEP survive; Backup & Restore lists them for rollback.
+   NEW(v3.1): plus one 'daily' snapshot a day (when anything changed) —
+   the newest DAILY_KEEP of those are kept separately, so a week of dailies
+   never pushes out a pre-restore safety copy. */
 const SNAPSHOT_KEEP = 3;
-export async function saveSnapshot(reason){
+export const DAILY_KEEP = 7;
+export async function saveSnapshot(reason, { kind = 'safety' } = {}){
   if (!state.transactions.length && !state.accounts.length) return null; // nothing worth keeping
-  const snap = { id: uid(), createdAt: Date.now(), reason, txnCount: state.transactions.length,
-                 data: JSON.parse(JSON.stringify(exportData())) };
+  const snap = { id: uid(), createdAt: Date.now(), reason, kind, txnCount: state.transactions.length,
+                 fp: dataFingerprint(), data: JSON.parse(JSON.stringify(exportData())) };
   await dbPut('snapshots', snap);
   const all = (await dbAll('snapshots')).sort((a,b) => b.createdAt - a.createdAt);
-  for (const old of all.slice(SNAPSHOT_KEEP)) await dbDel('snapshots', old.id);
+  const keep = { daily: DAILY_KEEP, safety: SNAPSHOT_KEEP }, seen = { daily: 0, safety: 0 };
+  for (const s of all){
+    const k = s.kind === 'daily' ? 'daily' : 'safety';
+    if (++seen[k] > keep[k]) await dbDel('snapshots', s.id);
+  }
+  return snap;
+}
+
+// NEW(v3.1): a cheap "did anything change?" — record count + newest write.
+export function dataFingerprint(){
+  let n = 0, newest = 0;
+  for (const k of ['accounts','transactions','bills','budgets','balanceAnchors','goals','netWorth','debtPlans']){
+    for (const r of state[k] || []){ n++; if ((r.updatedAt || 0) > newest) newest = r.updatedAt; }
+  }
+  return `${n}|${newest}|${JSON.stringify(state.categories || {}).length}`;
+}
+
+// NEW(v3.1): once a day, on open — skipped when nothing changed since the
+// last daily one (no point keeping seven identical copies).
+export async function maybeDailySnapshot(todayIso){
+  if (state.flags.lastDailySnapshot === todayIso) return null;
+  const latest = (await dbAll('snapshots')).filter(s => s.kind === 'daily').sort((a,b) => b.createdAt - a.createdAt)[0];
+  const snap = !latest || latest.fp !== dataFingerprint() ? await saveSnapshot('Daily', { kind: 'daily' }) : null;
+  state.flags.lastDailySnapshot = todayIso;
+  await saveFlags();
   return snap;
 }
 export async function listSnapshots(){
