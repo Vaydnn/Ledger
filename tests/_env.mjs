@@ -7,7 +7,7 @@ import { JSDOM } from 'jsdom';
    matchMedia, so this stub evaluates (min-width|max-width: Npx) queries
    against a width the test sets — 411 ≈ Fold cover screen, 860 ≈ unfolded.
    setViewport() fires 'change' listeners like a real fold/unfold. */
-const mq = { width: 411, height: 960, lists: [] };
+const mq = { width: 411, height: 960, posture: 'flat', lists: [] };
 function evalQuery(q){
   let ok = true;
   for (const m of q.matchAll(/\((min|max)-(width|height):\s*(\d+)px\)/g)){
@@ -15,9 +15,18 @@ function evalQuery(q){
     if (m[1] === 'min' && !(v >= +m[3])) ok = false;
     if (m[1] === 'max' && !(v <= +m[3])) ok = false;
   }
-  if (/segments/.test(q)) ok = false; // no foldable posture in tests unless overridden
+  // Foldable postures: tabletop = 2 vertical segments, book = 2 horizontal.
+  if (/vertical-viewport-segments:\s*2/.test(q)) ok = ok && mq.posture === 'tabletop';
+  if (/horizontal-viewport-segments:\s*2/.test(q)) ok = ok && mq.posture === 'book';
   return ok;
 }
+function refreshLists(){
+  for (const l of mq.lists){
+    const m = evalQuery(l.media);
+    if (m !== l.matches){ l.matches = m; for (const fn of l.listeners) fn({ matches: m, media: l.media }); }
+  }
+}
+export function setPosture(p){ mq.posture = p; refreshLists(); }
 function matchMediaStub(q){
   const l = { media: q, matches: evalQuery(q), listeners: [],
     addEventListener(_t, fn){ this.listeners.push(fn); }, removeEventListener(_t, fn){ this.listeners = this.listeners.filter(f => f !== fn); },
@@ -28,10 +37,7 @@ function matchMediaStub(q){
 export function setViewport(width, height = mq.height){
   mq.width = width; mq.height = height;
   if (globalThis.window){ window.innerWidth = width; window.innerHeight = height; }
-  for (const l of mq.lists){
-    const m = evalQuery(l.media);
-    if (m !== l.matches){ l.matches = m; for (const fn of l.listeners) fn({ matches: m, media: l.media }); }
-  }
+  refreshLists();
   if (globalThis.window) window.dispatchEvent(new window.Event('resize'));
 }
 
@@ -51,7 +57,7 @@ export async function bootEnv(opts = {}){
   globalThis.scrollTo = () => {};
   dom.window.scrollTo = () => {};
   globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
-  mq.width = opts.width || 411; mq.height = opts.height || 960; mq.lists = [];
+  mq.width = opts.width || 411; mq.height = opts.height || 960; mq.posture = 'flat'; mq.lists = [];
   dom.window.innerWidth = mq.width; dom.window.innerHeight = mq.height;
   globalThis.matchMedia = dom.window.matchMedia = matchMediaStub;
   return dom;

@@ -26,6 +26,7 @@ import { invalidateMerchantCache, categoryRuleKey } from './merchants.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { balanceLatest, firstActivityMonth } from './effects.js';
 import { migrateLegacyBalances, setAnchor, openBalancesSheet } from './balances.js';
+import { screenInfo, WIDE_MIN } from './layout.js';      // NEW(v3.1)
 
 const ACCOUNT_TYPES = ['Checking','Savings','Credit Card','Loan'];
 const bulletCls = (type) => type === 'Credit Card' ? 'cc' : (type === 'Loan' ? 'loan' : 'checking');
@@ -799,6 +800,12 @@ export function openAboutSheet(){
       </div>
     </div>
 
+    <div class="card" style="margin-bottom:14px;">
+      <h3 class="card-title">This screen <span class="pill">live</span></h3>
+      <div id="about-display">${displayRows()}</div>
+      <div class="muted small" style="margin-top:10px;line-height:1.5;">Fold or unfold with this open to see both screens. The layout switches at ${WIDE_MIN}px wide.</div>
+    </div>
+
     <button class="btn" id="about-update">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;"><path d="M3 12a9 9 0 0 1 15.5-6.2M21 4v5h-5M21 12a9 9 0 0 1-15.5 6.2M3 20v-5h5"/></svg>
       Check for updates
@@ -814,6 +821,19 @@ export function openAboutSheet(){
   `;
   openSheet();
   $('#about-update').addEventListener('click', checkForUpdates);
+  // Live: folding / unfolding / rotating updates the readout in place.
+  const refresh = () => { const el = $('#about-display'); if (el) el.innerHTML = displayRows(); else window.removeEventListener('resize', refresh); };
+  window.addEventListener('resize', refresh);
+}
+
+// NEW(v3.1): what the device reports — confirms the real CSS size of each
+// Fold screen (Samsung "Screen zoom" changes it) before tuning layouts.
+function displayRows(){
+  const s = screenInfo();
+  const row = (k, v) => `<div class="ds-row"><span>${k}</span><span class="mono">${esc(v)}</span></div>`;
+  return row('Viewport (CSS px)', s.css) + row('Pixel ratio', String(s.dpr)) + row('Physical px', s.physical)
+    + row('Screen', s.screen) + row('Orientation', s.orientation) + row('Layout', s.mode)
+    + row('Posture', s.posture) + row('Installed app', s.standalone ? 'yes' : 'no (browser tab)');
 }
 
 async function checkForUpdates(){

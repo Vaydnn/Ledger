@@ -45,7 +45,8 @@ const CORE = [
   './js/reconcile.js',
   './js/goals.js',
   './js/trash.js',
-  './js/pace.js'
+  './js/pace.js',
+  './js/layout.js'     // NEW(v3.1)
 ];
 
 self.addEventListener('install', (e) => {

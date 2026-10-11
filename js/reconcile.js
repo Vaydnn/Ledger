@@ -62,7 +62,7 @@ export function openReconcileSheet(){
     recState.account = [...options].sort((a, b) => (usage[b.name] || 0) - (usage[a.name] || 0))[0].name;
   }
   renderSetup(options);
-  openSheet();
+  openSheet({ wide: true }); // v3.1: centered dialog unfolded (side-by-side columns)
 }
 
 function renderSetup(options){
@@ -621,6 +621,8 @@ function renderResults(){
 
     ${clean ? `<div class="debt-good" style="margin-bottom:12px;">✓ Fully reconciled — every statement row has a ledger match.</div>` : ''}
 
+    ${csvOnly.length || ledgerOnly.length ? `<div class="rc-pair">
+    <div class="rc-col">
     ${csvOnly.length ? `
       <div class="section-label">On statement, not in ledger · ${fmt(csvOnlySum)}</div>
       <div class="muted small" style="margin-bottom:8px;line-height:1.5;"><b>Add</b> logs it as shown (names and categories learned from rows you've already matched). Tap the row to pick a different category.</div>
@@ -637,7 +639,24 @@ function renderResults(){
         </div>`;
       }).join('')}
       ${inlineRows.length > 1 ? `<button class="btn ghost" id="rc-add-all" style="margin-top:4px;margin-bottom:6px;font-size:12.5px;padding:10px;">Add all ${inlineRows.length} as shown</button>` : ''}
-    ` : ''}
+    ` : `<div class="section-label">On statement, not in ledger</div><div class="muted small">None.</div>`}
+    </div>
+    <div class="rc-col">
+    ${ledgerOnly.length ? `
+      <div class="section-label">In ledger, not on statement · ${fmt(ledgerOnlySum)}</div>
+      <div class="muted small" style="margin-bottom:8px;line-height:1.5;">Pending charges that haven't posted yet often land here — widen the tolerance or re-check after the statement updates. A wrong amount shows up as one row on each side.</div>
+      ${ledgerOnly.map(t => `
+        <div class="rec-row rc-jump" data-id="${esc(t.id)}" style="cursor:pointer;">
+          <div style="min-width:0;flex:1;">
+            <div style="font-size:13.5px;font-weight:500;">${fmt(t.amount)} <span class="muted small">· ${esc(t.type)}</span></div>
+            <div class="muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.date)} · ${esc(t.category || '')}${t.description ? ' · ' + esc(t.description) : ''}</div>
+          </div>
+          <span class="arrow">›</span>
+        </div>
+      `).join('')}
+    ` : `<div class="section-label">In ledger, not on statement</div><div class="muted small">None.</div>`}
+    </div>
+    </div>` : ''}
 
     ${loose.length ? `
       <div class="section-label">Matched on amount only · posting lag</div>
@@ -667,20 +686,6 @@ function renderResults(){
         </div>
       `).join('')}
       ${canceled.length > 1 ? `<button class="btn ghost" id="rc-addpair-all" style="margin-top:4px;margin-bottom:6px;font-size:12.5px;padding:10px;">Add all ${canceled.length} pairs (${canceled.length*2} transactions)</button>` : ''}
-    ` : ''}
-
-    ${ledgerOnly.length ? `
-      <div class="section-label">In ledger, not on statement · ${fmt(ledgerOnlySum)}</div>
-      <div class="muted small" style="margin-bottom:8px;line-height:1.5;">Pending charges that haven't posted yet often land here — widen the tolerance or re-check after the statement updates. A wrong amount shows up as one row on each side.</div>
-      ${ledgerOnly.map(t => `
-        <div class="rec-row rc-jump" data-id="${esc(t.id)}" style="cursor:pointer;">
-          <div style="min-width:0;flex:1;">
-            <div style="font-size:13.5px;font-weight:500;">${fmt(t.amount)} <span class="muted small">· ${esc(t.type)}</span></div>
-            <div class="muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.date)} · ${esc(t.category || '')}${t.description ? ' · ' + esc(t.description) : ''}</div>
-          </div>
-          <span class="arrow">›</span>
-        </div>
-      `).join('')}
     ` : ''}
 
     ${matched.length ? `<button class="btn ghost" id="rc-show-matched" style="margin-top:12px;">Show ${matched.length} matched</button><div id="rc-matched"></div>` : ''}
@@ -779,11 +784,16 @@ function renderResults(){
   }));
   $('#rc-show-matched')?.addEventListener('click', () => {
     const host = $('#rc-matched');
-    host.innerHTML = matched.map(m => `
-      <div class="rec-row" style="opacity:.65;">
-        <div style="min-width:0;flex:1;">
-          <div style="font-size:13px;">${fmt(Math.abs(m.csv.amount))} · ${esc(m.csv.date)} ↔ ${esc(m.txn.date)}</div>
-          <div class="muted small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(m.csv.desc || m.txn.description || m.txn.category || '')}</div>
+    // v3.1: statement side ↔ your side, aligned (two columns unfolded).
+    host.innerHTML = `<div class="rc-match-head"><span>Statement</span><span>Your ledger</span></div>` + matched.map(m => `
+      <div class="rec-row rc-match-row" style="opacity:.75;">
+        <div class="rc-side">
+          <div style="font-size:13px;">${fmt(Math.abs(m.csv.amount))} · ${esc(m.csv.date)}</div>
+          <div class="muted small rc-ell">${esc(m.csv.desc || '—')}</div>
+        </div>
+        <div class="rc-side">
+          <div style="font-size:13px;">${esc(m.txn.date)} · ${esc(m.txn.category || m.txn.type)}</div>
+          <div class="muted small rc-ell">${esc(m.txn.description || '—')}</div>
         </div>
         <span style="color:var(--green);flex-shrink:0;">✓</span>
       </div>

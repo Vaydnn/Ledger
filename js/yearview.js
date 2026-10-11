@@ -165,7 +165,7 @@ export function openYearViewSheet(){
       ${activeDays} active day${activeDays===1?'':'s'} this year. Max magnitude shown: ${fmtShort(maxAbs)}.
     </div>
   `;
-  openSheet();
+  openSheet({ wide: true }); // v3.1: centered dialog unfolded
 
   $$('.yv-cell[data-iso]').forEach(c => c.addEventListener('click', () => openDayDrill(c.dataset.iso)));
 }

@@ -451,6 +451,12 @@ nav.tabs{
   background:var(--line-2);border-radius:2px;
 }
 .sheet h2{font-family:"Instrument Serif",serif;font-weight:400;font-size:24px;margin:0 0 14px;}
+/* NEW(v3.1): close button — shown only unfolded (side panel / dialog). */
+.sheet-close{
+  display:none;position:sticky;top:0;float:right;z-index:6;margin:-6px -6px 0 8px;
+  width:36px;height:36px;border-radius:50%;place-items:center;
+  background:var(--bg-3);border:1px solid var(--line);color:var(--text-2);font-size:20px;line-height:1;
+}
 
 /* ── More menu ─────────────────────────── */
 .menu-item{
@@ -823,12 +829,13 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
   color:var(--text-3);font-size:11px;letter-spacing:.06em;line-height:1.8;
 }
 
-/* ── Foldable unfolded / tablet-like screens (Z Fold 6 inner display) ─────────── */
-/* Folded cover (~376 CSS px) uses the default mobile layout above.
-   Unfolded inner display ranges from ~620px (portrait) to ~900px (landscape)
-   depending on display scaling. Breakpoint set at 560px so both orientations
-   of the unfolded state pick up the wider layout. */
-@media (min-width: 560px){
+/* ── Foldable unfolded / tablet-like screens ─────────── */
+/* FIX(v3.1): tuned for the Galaxy Z Fold 8 Ultra. Folded cover ≈ 411 CSS px
+   uses the default mobile layout above; the inner display is ≈ 860 (portrait)
+   / 955 (landscape). The breakpoint moved 560 → 700px (560 dated from the
+   Fold 6's ~620px inner screen) — safely between the two screens at any
+   Samsung "Screen zoom". Keep in sync with WIDE_MIN in js/layout.js. */
+@media (min-width: 700px){
   html, body { font-size: 15.5px; }
 
   main {
@@ -859,6 +866,11 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
     display: block;
   }
 
+  /* v3.1: Home cards are wrapped in .home-card sections — the column item
+     carries the spacing, so the inner card's own top margin goes. */
+  #view-home > .home-card > * { margin-top: 0 !important; }
+  #view-home > .home-customize { column-span: all; }
+
   /* List views: use the full main width, no extra cap. Side padding from main is enough. */
   #view-txns, #view-bills, #view-add {
     max-width: 100%;
@@ -880,29 +892,49 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
   .type-pill { min-width: 86px; padding: 13px 10px; font-size: 12.5px; }
   .input.amount { font-size: 44px; }
 
-  /* Bottom nav — centered floating bar instead of full-width stripe */
+  /* NEW(v3.1): navigation RAIL on the left edge when unfolded (Material 3
+     adaptive nav). The bottom bar ate ~80px of the near-square inner screen
+     and sat far from either thumb; the rail frees the height and sits under
+     the left thumb when holding the open Fold. Still a zero-transform,
+     zero-animation zone (FIX v2.4.3 — Samsung Internet compositing). */
+  :root { --rail: 92px; }
+  body { padding-bottom: calc(24px + env(safe-area-inset-bottom)); padding-left: var(--rail); }
   nav.tabs {
-    /* FIX(v2.4.3): centered via auto margins instead of transform — the nav
-       must carry zero transforms at any width (compositing stability on
-       Samsung Internet, and this is the unfolded-Fold breakpoint). */
-    max-width: 620px;
-    left: 0;
-    right: 0;
-    margin: 0 auto;
-    border: 1px solid var(--line);
-    border-bottom: 0;
-    border-top-left-radius: 22px;
-    border-top-right-radius: 22px;
+    top: 0; bottom: 0; left: 0; right: auto;
+    width: 92px;
+    flex-direction: column; justify-content: center; align-items: stretch; gap: 10px;
+    border-top: 0; border-right: 1px solid var(--line);
+    padding: calc(16px + env(safe-area-inset-top)) 6px calc(16px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left));
   }
+  nav.tabs .tab { flex: 0 0 auto; padding: 10px 2px; }
+  nav.tabs .tab.add { order: -1; margin-bottom: 14px; }   /* Add on top of the rail */
+  nav.tabs .tab.add .fab { margin-top: 0; margin-bottom: 4px; width: 52px; height: 52px; }
+  .toast { bottom: calc(28px + env(safe-area-inset-bottom)); margin-left: 46px; }
 
-  /* Bottom sheets — fill the width on unfolded (no awkward narrow centered look) */
+  /* NEW(v3.1): sheets become a SIDE PANEL on the right — about one cover
+     screen wide, so every sheet designed for the folded phone fits as-is,
+     and the screen you came from stays visible on the left. Wide content
+     (Reconcile, Year View, Forecast) opens as a centered DIALOG instead
+     (openSheet({ wide:true })). No grab handle — close with ×, the
+     backdrop, Back, or Escape. */
   .sheet {
-    max-width: 860px;
-    left: 50%;
-    right: auto;
-    transform: translate(-50%, 100%);
+    top: 0; bottom: 0; left: auto; right: 0;
+    width: min(460px, 52vw); max-height: none;
+    border-radius: 24px 0 0 24px; border-top: 0; border-left: 1px solid var(--line);
+    padding: calc(18px + env(safe-area-inset-top)) 22px calc(22px + env(safe-area-inset-bottom));
+    transform: translateX(100%);
   }
-  .sheet.open { transform: translate(-50%, 0); }
+  .sheet.open { transform: translateX(0); }
+  .sheet.sheet-wide {
+    top: 50%; bottom: auto; left: 50%; right: auto;
+    width: min(860px, calc(100vw - 120px)); max-height: 88dvh;
+    border-radius: 24px; border: 1px solid var(--line);
+    transform: translate(-50%, -46%); opacity: 0; pointer-events: none;
+    transition: transform .25s cubic-bezier(.32,.72,.25,1), opacity .2s ease;
+  }
+  .sheet.sheet-wide.open { transform: translate(-50%, -50%); opacity: 1; pointer-events: auto; }
+  .sheet .sheet-handle { display: none; }
+  .sheet .sheet-close { display: grid; }
 
   /* Splash mark scales up for bigger canvas */
   .splash .mark { font-size: 68px; }
@@ -1041,7 +1073,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
 .yv-cell.neg.b3 .yv-day,
 .yv-cell.neg.b4 .yv-day{color:#1a0f0a;}
 
-@media (min-width: 560px){
+@media (min-width: 700px){ /* v3.1: unfolded breakpoint (js/layout.js WIDE_MIN) */
   .yv-months{grid-template-columns:repeat(4, 1fr);gap:16px;}
   .yv-cell{min-height:16px;}
   .yv-cell .yv-day{font-size:9px;}
@@ -1155,6 +1187,112 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
 .rc-guess{font-size:11.5px;color:var(--ember-2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
 /* ── NEW(v3.1) ─────────────────────────── */
+/* Unfolded two-pane layout (Activity list + detail, Add form + context,
+   Bills list + calendar). On the Fold's inner screen each pane is about a
+   cover screen wide. Folded, only the main pane exists. */
+.split-side{display:none;}
+@media (min-width: 700px){
+  .split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:start;}
+  .split-side{
+    display:block;position:sticky;top:calc(70px + env(safe-area-inset-top));
+    max-height:calc(100dvh - 96px - env(safe-area-inset-top));overflow:auto;overscroll-behavior:contain;
+  }
+}
+.split-title{font-family:"Instrument Serif",serif;font-weight:400;font-size:24px;margin:2px 0 12px;}
+.split-empty{
+  border:1px dashed var(--line-2);border-radius:var(--r);padding:36px 20px;text-align:center;
+  color:var(--text-3);font-size:13px;line-height:1.5;
+}
+.split-empty .big{font-family:"Instrument Serif",serif;font-size:22px;color:var(--text-2);margin-bottom:6px;}
+.txn.selected{background:var(--bg-3);box-shadow:inset 3px 0 0 var(--ember);}
+
+/* Half-folded postures (Viewport Segments API — Chromium on foldables).
+   TABLETOP (hinge horizontal): the glanceable part (.tt-top — Home's hero,
+   the Add form's amount) pins to the top half; everything else scrolls in
+   the bottom half. BOOK (hinge vertical): the two-pane split lines up with
+   the two halves so nothing sits in the crease. No-ops elsewhere. */
+@media (vertical-viewport-segments: 2){
+  body.posture-tabletop .appbar{display:none;}
+  body.posture-tabletop main{padding-top:calc(env(viewport-segment-top 0 1, 50vh) + 10px);}
+  body.posture-tabletop .view.active .tt-top{
+    position:fixed;left:0;right:0;top:0;z-index:55;margin:0;
+    height:env(viewport-segment-height 0 0, 50vh);
+    display:flex;flex-direction:column;justify-content:center;
+    padding:12px 24px 12px calc(24px + var(--rail, 0px));background:var(--bg);
+    border-bottom:1px solid var(--line);
+  }
+  body.posture-tabletop .view.active .field.tt-top .amt-pad{display:none;}
+  body.posture-tabletop .view.active .field.tt-top .input.amount{font-size:56px;text-align:center;}
+}
+@media (horizontal-viewport-segments: 2){
+  body.posture-book .split{
+    grid-template-columns:calc(env(viewport-segment-width 0 0, 50vw) - var(--rail, 0px) - 44px) minmax(0,1fr);
+    column-gap:calc(env(viewport-segment-left 1 0, 50vw) - env(viewport-segment-right 0 0, 50vw) + 32px);
+  }
+  body.posture-book #view-home, body.posture-book #view-debts, body.posture-book #view-more{
+    column-gap:calc(env(viewport-segment-left 1 0, 50vw) - env(viewport-segment-right 0 0, 50vw) + 32px);
+  }
+}
+
+/* Customizable Home: collapse a card to its title row */
+.card-fold{
+  margin-left:auto;flex-shrink:0;width:30px;height:26px;border-radius:8px;color:var(--text-3);
+  font-size:16px;line-height:1;display:inline-grid;place-items:center;transition:transform .2s;
+}
+.card-title .card-fold{margin-left:8px;}
+.real-head .card-fold{align-self:flex-start;margin-left:4px;}
+.home-card.collapsed .card-fold{transform:rotate(-90deg);}
+.home-card.collapsed .card > :not(.card-title){display:none !important;}
+.home-card.collapsed .card .card-title{margin-bottom:0;}
+.home-card.collapsed .real-card > :not(.real-head){display:none !important;}
+.home-card.collapsed .real-head .sub, .home-card.collapsed .real-head .btn{display:none;}
+.home-customize{display:block;margin:18px auto 4px;}
+
+/* Number pad (Add form) */
+.amt-calc{min-height:16px;font-family:"JetBrains Mono",monospace;font-size:12.5px;color:var(--ember-2);text-align:right;margin-top:4px;}
+.amt-pad{display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:8px;margin-top:8px;}
+.pad-key{
+  height:52px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line);
+  font-family:"JetBrains Mono",monospace;font-size:21px;color:var(--text);
+  user-select:none;-webkit-user-select:none;touch-action:manipulation;
+}
+.pad-key:active{background:var(--bg-3);}
+.pad-key.pad-op{color:var(--ember-2);font-size:19px;}
+.pad-key.pad-save{background:linear-gradient(140deg, var(--ember), #c97a3a);color:#1a0f06;border:0;font-size:22px;font-weight:600;}
+.input.amount[readonly]{caret-color:transparent;}
+.link-btn{font-size:11.5px;color:var(--text-3);text-decoration:underline;text-underline-offset:2px;margin-top:6px;padding:2px 0;}
+.date-chips{display:flex;gap:6px;margin-top:6px;}
+.chip.mini{min-height:30px;padding:4px 10px;font-size:11.5px;}
+
+/* Reconcile: statement vs ledger side by side (unfolded) */
+.rc-side{min-width:0;flex:1;}
+.rc-ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rc-match-head{display:none;}
+.rc-match-row .rc-side + .rc-side{display:none;}       /* folded: statement side only */
+@media (min-width: 700px){
+  .rc-pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start;}
+  .rc-match-head{display:grid;grid-template-columns:1fr 1fr 18px;gap:12px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-3);margin:14px 0 6px;}
+  .rc-match-row{display:grid;grid-template-columns:1fr 1fr 18px;gap:12px;}
+  .rc-match-row .rc-side + .rc-side{display:block;}
+}
+
+/* Bills calendar (unfolded) */
+.cal{display:grid;grid-template-columns:repeat(7, minmax(0,1fr));gap:4px;}
+.cal-w{font-size:10px;color:var(--text-3);text-align:center;letter-spacing:.1em;padding-bottom:2px;}
+.cal-cell{min-height:58px;background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:3px;min-width:0;}
+.cal-cell.blank{background:none;border-color:transparent;}
+.cal-cell.today{border-color:var(--ember);}
+.cal-d{font-size:10.5px;color:var(--text-3);}
+.cal-bill{
+  display:block;width:100%;text-align:left;font-size:10px;line-height:1.25;padding:3px 4px;border-radius:5px;
+  background:var(--bg-3);color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  margin-bottom:2px;
+}
+.cal-bill .mono{color:var(--text-3);}
+.cal-bill.paid{color:var(--green);background:rgba(127,176,105,.12);}
+.cal-bill.overdue{color:var(--red);background:rgba(217,119,87,.14);}
+.cal-bill.today,.cal-bill.soon{color:var(--amber);background:rgba(224,181,78,.12);}
+
 /* Muted tag after a picker label / picker value ("closed") */
 .picker-note{
   font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);
@@ -1220,7 +1358,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
 </nav>
 
 <div class="sheet-backdrop" id="backdrop"></div>
-<div class="sheet" id="sheet"><div class="sheet-handle"></div><div id="sheetBody"></div></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="sheet-handle"></div><button class="sheet-close" id="sheetClose" type="button" aria-label="Close">×</button><div id="sheetBody"></div></div>
 <div class="toast" id="toast"></div>
 
 <script type="module" src="js/app.js"></script>

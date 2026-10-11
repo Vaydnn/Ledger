@@ -337,5 +337,5 @@ export function openForecastSheet(){
       Forecast quality improves with more transaction history. One-off purchases aren't projected, and charges on a card whose payment is a bill reach cash through that bill.
     </div>
   `;
-  openSheet();
+  openSheet({ wide: true }); // v3.1: centered dialog unfolded
 }

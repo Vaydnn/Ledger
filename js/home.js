@@ -6,11 +6,11 @@
    insights (new in v1.1.0).
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alphaSort, sumMoney, toCents, fromCents, esc, haptic } from './util.js';
-import { state, dbPut, saveFlags, saveSelected } from './db.js';
+import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, monthAbbr, alphaSort, sumMoney, toCents, fromCents, esc } from './util.js';
+import { state, dbPut, saveFlags } from './db.js';
 import { balanceAt, monthTotals } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
-import { navigate, renderAll } from './app.js';
+import { navigate } from './app.js';
 import { txnHTML, openTxnSheet, filterActivityByAccount } from './txns.js';
 import { billRowHTML, payBill, openBillSheet, getBillDueDay, computeRealAvailable, wireBillRows } from './bills.js';
 import { renderInsightsCard } from './insights.js';
@@ -35,42 +35,93 @@ export function acctBalanceHTML(a, bal){
   return bal < -0.004 ? `<span class="neg">${fmt(bal)}</span>` : fmt(bal);
 }
 
-/* ── NEW(v2.9.2): swipe left/right on Home to change month ──────────────
-   The picker sheet stays for jumping far; a swipe handles the constant
-   "how did last month look" hop. Guards: edge touches are ignored (Android
-   back-gesture zone), and the swipe must be decisively horizontal so it
-   never fights vertical scrolling. Wired once — the listener lives on the
-   persistent #view-home container, not the re-rendered contents. */
-let _swipeWired = false;
-function wireMonthSwipe(){
-  if (_swipeWired) return;
-  _swipeWired = true;
-  const v = $('#view-home');
-  if (!v || !('ontouchstart' in window)) return;
-  let sx = 0, sy = 0, tracking = false;
-  v.addEventListener('touchstart', (e) => {
-    const t = e.touches[0];
-    tracking = t.clientX > 24 && t.clientX < window.innerWidth - 24;
-    sx = t.clientX; sy = t.clientY;
-  }, { passive: true });
-  v.addEventListener('touchend', async (e) => {
-    if (!tracking) return;
-    tracking = false;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - sx, dy = t.clientY - sy;
-    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    let { year, month } = state.selected;
-    if (dx < 0){ month++; if (month > 12){ month = 1; year++; } }
-    else { month--; if (month < 1){ month = 12; year--; } }
-    state.selected = { year, month };
-    haptic(6);
-    await saveSelected();
-    renderAll();
-  }, { passive: true });
+/* ── NEW(v3.1): customizable Home ─────────────────────────────────────
+   Below the hero, every card can be reordered, hidden, or collapsed to its
+   title (tap ⌄). The cover screen is tall and narrow — collapsing the cards
+   you only glance at keeps what matters above the fold. Stored in
+   flags.homeLayout = { order, hidden, collapsed }. */
+export const HOME_CARDS = [
+  ['quicklog', 'Quick log'], ['pace', 'Month-End Pace'], ['real', 'Real available'],
+  ['insights', 'Insights'], ['recent', 'Recent'], ['bills', 'Upcoming Bills'],
+  ['debt', 'Debt Total'], ['accounts', 'Accounts'], ['budgets', 'Budgets'], ['goals', 'Savings Goals']
+];
+const DEFAULT_ORDER = HOME_CARDS.map(([k]) => k);
+
+export function homeLayout(){
+  const saved = state.flags.homeLayout || {};
+  const order = (saved.order || []).filter(k => DEFAULT_ORDER.includes(k));
+  // Cards added in later versions slot in at their default position.
+  DEFAULT_ORDER.forEach((k, i) => { if (!order.includes(k)) order.splice(Math.min(i, order.length), 0, k); });
+  return { order, hidden: saved.hidden || [], collapsed: saved.collapsed || [] };
+}
+async function saveHomeLayout(layout){
+  state.flags.homeLayout = { order: layout.order, hidden: layout.hidden, collapsed: layout.collapsed };
+  await saveFlags();
 }
 
+function addCardFolds(v, layout){
+  $$('.home-card', v).forEach(sec => {
+    const key = sec.dataset.card;
+    const head = sec.querySelector('.card-title, .real-head');
+    if (!head) return;          // e.g. the quick-log buttons
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'card-fold';
+    btn.setAttribute('aria-label', 'Collapse or expand');
+    btn.setAttribute('aria-expanded', String(!layout.collapsed.includes(key)));
+    btn.textContent = '⌄';
+    head.appendChild(btn);
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const now = homeLayout();
+      const collapsed = !now.collapsed.includes(key);
+      now.collapsed = collapsed ? [...now.collapsed, key] : now.collapsed.filter(k => k !== key);
+      sec.classList.toggle('collapsed', collapsed);
+      btn.setAttribute('aria-expanded', String(!collapsed));
+      await saveHomeLayout(now);
+    });
+  });
+}
+
+export function openHomeCustomizeSheet(){
+  const layout = homeLayout();
+  const label = Object.fromEntries(HOME_CARDS);
+  $('#sheetBody').innerHTML = `
+    <h2>Customize Home</h2>
+    <div class="muted small" style="margin-bottom:12px;line-height:1.5;">Order and show/hide the cards below the monthly summary. Tap ⌄ on any card on Home to collapse it.</div>
+    ${layout.order.map((k, i) => `
+      <div class="rec-row hc-row" data-k="${k}">
+        <div style="min-width:0;flex:1;font-size:14px;${layout.hidden.includes(k) ? 'opacity:.45;' : ''}">${esc(label[k])}</div>
+        <button type="button" class="btn ghost hc-up" data-k="${k}" ${i === 0 ? 'disabled' : ''} style="width:auto;padding:6px 10px;" aria-label="Move up">↑</button>
+        <button type="button" class="btn ghost hc-down" data-k="${k}" ${i === layout.order.length - 1 ? 'disabled' : ''} style="width:auto;padding:6px 10px;" aria-label="Move down">↓</button>
+        <button type="button" class="btn ${layout.hidden.includes(k) ? 'secondary' : 'ghost'} hc-vis" data-k="${k}" style="width:auto;padding:6px 10px;font-size:12px;min-width:64px;">${layout.hidden.includes(k) ? 'Hidden' : 'Shown'}</button>
+      </div>`).join('')}
+    <button class="btn ghost" id="hc-reset" style="margin-top:12px;">Reset to default</button>
+  `;
+  openSheet();
+  const move = async (k, d) => {
+    const l = homeLayout(); const i = l.order.indexOf(k); const j = i + d;
+    if (j < 0 || j >= l.order.length) return;
+    [l.order[i], l.order[j]] = [l.order[j], l.order[i]];
+    await saveHomeLayout(l); renderHome(); openHomeCustomizeSheet();
+  };
+  $$('.hc-up').forEach(b => b.addEventListener('click', () => move(b.dataset.k, -1)));
+  $$('.hc-down').forEach(b => b.addEventListener('click', () => move(b.dataset.k, 1)));
+  $$('.hc-vis').forEach(b => b.addEventListener('click', async () => {
+    const l = homeLayout(); const k = b.dataset.k;
+    l.hidden = l.hidden.includes(k) ? l.hidden.filter(x => x !== k) : [...l.hidden, k];
+    await saveHomeLayout(l); renderHome(); openHomeCustomizeSheet();
+  }));
+  $('#hc-reset').addEventListener('click', async () => {
+    await saveHomeLayout({ order: [...DEFAULT_ORDER], hidden: [], collapsed: [] });
+    renderHome(); openHomeCustomizeSheet();
+  });
+}
+
+// Month swipe (v2.9.2) moved to app.js in v3.1 — shared by Home, Bills and
+// Activity (wireMonthSwipes).
+
 export function renderHome(){
-  wireMonthSwipe();
   const { year, month } = state.selected;
   const tot = monthTotals(year, month);
   const ym = `${year}-${String(month).padStart(2,'0')}`;
@@ -111,41 +162,12 @@ export function renderHome(){
   const dismissedMigration = !!state.flags.migrationDismissed;
 
   const v = $('#view-home');
-  v.innerHTML = `
-    ${legacyRefunds.length > 0 && !dismissedMigration ? `
-      <div class="migrate-banner">
-        <div class="migrate-head">
-          <span class="migrate-dot">↺</span>
-          <div style="flex:1;">
-            <div class="migrate-title">New: dedicated Refund type</div>
-            <div class="migrate-sub">Found ${legacyRefunds.length} old refund${legacyRefunds.length===1?'':'s'} logged as Income. Reclassify them?</div>
-          </div>
-        </div>
-        <div class="migrate-actions">
-          <button class="btn ghost" id="migrate-skip" style="width:auto;padding:8px 14px;font-size:12px;">Not now</button>
-          <button class="btn" id="migrate-go" style="width:auto;padding:8px 14px;font-size:12px;">Reclassify</button>
-        </div>
-      </div>
-    ` : ''}
-
-    <div class="hero">
-      <div class="label">Net this month</div>
-      <div class="net ${tot.net >= 0 ? 'pos' : 'neg'}">
-        <span class="sign">${tot.net >= 0 ? '+' : '−'}</span>${fmt(Math.abs(tot.net))}
-      </div>
-      <div class="sub">${monthName(month)} ${year} · ${state.transactions.filter(t => monthKey(t.date) === ym).length} transactions</div>
-      <div class="hero-grid ${tot.rfnd > 0 ? 'has-refunds' : ''}">
-        <div class="hero-stat income"><div class="v">${fmtShort(tot.inc)}</div><div class="l">Income</div></div>
-        <div class="hero-stat expense"><div class="v">${fmtShort(tot.exp)}</div><div class="l">Expenses</div></div>
-        <div class="hero-stat invest"><div class="v">${fmtShort(tot.inv)}</div><div class="l">Invested</div></div>
-        ${tot.rfnd > 0 ? `<div class="hero-stat refund"><div class="v">${fmtShort(tot.rfnd)}</div><div class="l">Refunded</div></div>` : ''}
-      </div>
-    </div>
-
-    ${renderQuickLog()}
-
-    ${renderPaceCard()}
-
+  // NEW(v3.1): every card below the hero is built separately so Home can be
+  // reordered, trimmed and collapsed (homeLayout / Customize Home).
+  const cards = {
+    quicklog: renderQuickLog(),
+    pace: renderPaceCard(),
+    real: `
     <div class="real-card">
       <div class="real-head">
         <div>
@@ -164,25 +186,20 @@ export function renderHome(){
         ${cardLines.map(c => `<div class="rb-row"><span>− ${esc(c.name)}</span><span class="mono amber">${fmt(c.bal)}</span></div>`).join('')}
         <div class="rb-row total"><span>= Available</span><span class="mono ${realAvailable>=0?'pos':'neg'}">${fmt(realAvailable)}</span></div>
       </div>
-    </div>
-
-    ${renderInsightsCard(year, month)}
-
-    ${state.transactions.length ? `
+    </div>`,
+    insights: renderInsightsCard(year, month),
+    recent: state.transactions.length ? `
       <div class="card" style="margin-top:14px;">
         <h3 class="card-title">Recent</h3>
         ${state.transactions.slice(0, 5).map(t => txnHTML(t)).join('')}
-      </div>
-    ` : ''}
-
-    ${upcomingPreview.length ? `
+      </div>` : '',
+    bills: upcomingPreview.length ? `
       <div class="card" style="margin-top:14px;">
         <h3 class="card-title">Upcoming Bills <span class="pill">${unpaidBills.length} unpaid</span></h3>
         ${upcomingPreview.map(b => billRowHTML(b, ym, isCurrentMonth, todayDay)).join('')}
         ${unpaidBills.length > 4 ? `<button class="btn ghost" id="see-all-bills" style="margin-top:10px;">See all ${unpaidBills.length} bills</button>` : ''}
-      </div>
-    ` : ''}
-
+      </div>` : '',
+    debt: `
     <div class="card" style="margin-top:14px;">
       <h3 class="card-title">Debt Total <span class="pill">${state.accounts.filter(a => a.active && (a.type==='Credit Card' || a.type==='Loan')).length}</span></h3>
       <div class="debt-summary">
@@ -190,8 +207,8 @@ export function renderHome(){
         ${loanDebt > 0 ? `<div class="ds-row"><span>Loans</span><span class="mono amber">${fmt(loanDebt)}</span></div>` : ''}
         <div class="ds-row total"><span>Total owed</span><span class="mono amber">${fmt(ccDebt + loanDebt)}</span></div>
       </div>
-    </div>
-
+    </div>`,
+    accounts: `
     <div class="card" style="margin-top:14px;">
       <h3 class="card-title">Accounts <span class="pill">${state.accounts.filter(a=>a.active).length}</span></h3>
       ${state.accounts.filter(a => a.active).map(a => {
@@ -211,12 +228,50 @@ export function renderHome(){
           </div>
         `;
       }).join('')}
+    </div>`,
+    budgets: renderBudgetsCard(year, month),
+    goals: renderGoalsCard()
+  };
+  const layout = homeLayout();
+
+  v.innerHTML = `
+    ${legacyRefunds.length > 0 && !dismissedMigration ? `
+      <div class="migrate-banner">
+        <div class="migrate-head">
+          <span class="migrate-dot">↺</span>
+          <div style="flex:1;">
+            <div class="migrate-title">New: dedicated Refund type</div>
+            <div class="migrate-sub">Found ${legacyRefunds.length} old refund${legacyRefunds.length===1?'':'s'} logged as Income. Reclassify them?</div>
+          </div>
+        </div>
+        <div class="migrate-actions">
+          <button class="btn ghost" id="migrate-skip" style="width:auto;padding:8px 14px;font-size:12px;">Not now</button>
+          <button class="btn" id="migrate-go" style="width:auto;padding:8px 14px;font-size:12px;">Reclassify</button>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="hero tt-top">
+      <div class="label">Net this month</div>
+      <div class="net ${tot.net >= 0 ? 'pos' : 'neg'}">
+        <span class="sign">${tot.net >= 0 ? '+' : '−'}</span>${fmt(Math.abs(tot.net))}
+      </div>
+      <div class="sub">${monthName(month)} ${year} · ${state.transactions.filter(t => monthKey(t.date) === ym).length} transactions</div>
+      <div class="hero-grid ${tot.rfnd > 0 ? 'has-refunds' : ''}">
+        <div class="hero-stat income"><div class="v">${fmtShort(tot.inc)}</div><div class="l">Income</div></div>
+        <div class="hero-stat expense"><div class="v">${fmtShort(tot.exp)}</div><div class="l">Expenses</div></div>
+        <div class="hero-stat invest"><div class="v">${fmtShort(tot.inv)}</div><div class="l">Invested</div></div>
+        ${tot.rfnd > 0 ? `<div class="hero-stat refund"><div class="v">${fmtShort(tot.rfnd)}</div><div class="l">Refunded</div></div>` : ''}
+      </div>
     </div>
 
-    ${renderBudgetsCard(year, month)}
+    ${layout.order.filter(k => !layout.hidden.includes(k) && cards[k]).map(k =>
+      `<section class="home-card${layout.collapsed.includes(k) ? ' collapsed' : ''}" data-card="${k}">${cards[k]}</section>`).join('')}
 
-    ${renderGoalsCard()}
+    <button type="button" class="link-btn home-customize" id="home-customize">Customize Home</button>
   `;
+  addCardFolds(v, layout);
+  $('#home-customize', v).addEventListener('click', openHomeCustomizeSheet);
 
   // NEW(v2.4.1): quick-log, redesigned per feedback — three type buttons
   // (Expense / Income / Refund). Tapping one opens a picker of your

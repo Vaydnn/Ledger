@@ -17,12 +17,14 @@
      subtracted it twice).
    ============================================================ */
 
-import { $, $$, today, uid, toast, toastAction, parseAmount, esc, haptic, busyGuard } from './util.js';
+import { $, $$, today, uid, toast, toastAction, esc, haptic, busyGuard, fmt, round2, daysBetween, squash, evalAmountExpr, toLocalISO } from './util.js';
 import { state, dbPut, saveFlags } from './db.js';
 import { openPicker, closeSheet } from './sheet.js';
 import { navigate } from './app.js';
-import { getMerchantSuggestions, lookupMerchant, invalidateMerchantCache, preferredAccountFor, categoryRule, categoryRuleKey, refundBudgetCategory } from './merchants.js';
+import { getMerchantSuggestions, lookupMerchant, invalidateMerchantCache, preferredAccountFor, categoryRule, categoryRuleKey, refundBudgetCategory, merchantCore } from './merchants.js';
 import { findMatchingBill, markBillPaidWith } from './bills.js';
+import { acctTypeMap, txnEffectsCents, balanceLatest } from './effects.js';  // NEW(v3.1)
+import { isWide } from './layout.js';                                          // NEW(v3.1)
 
 // FIX(v2.9.1): the pre-selected account is the one you've actually used most
 // (among valid options for the current type) — no personal names in code.
@@ -189,20 +191,27 @@ export function renderAdd(){
       </div>`;
   })();
 
-  v.innerHTML = `
+  const padMode = padModeOn();   // NEW(v3.1): number pad vs system keyboard
+  const formHTML = `
     <div class="type-pills">
       ${types.map(t => `<button class="type-pill" data-type="${t}" aria-pressed="${addForm.type===t}">${t}</button>`).join('')}
     </div>
 
-    <div class="field">
+    <div class="field tt-top">
       <label>Amount</label>
-      <input class="input amount" id="f-amount" type="text" inputmode="decimal" placeholder="0.00" value="${esc(addForm.amount)}" />
+      <input class="input amount" id="f-amount" type="text" ${padMode ? 'readonly inputmode="none"' : 'inputmode="decimal"'} placeholder="0.00" value="${esc(addForm.amount)}" />
+      <div class="amt-calc" id="f-amt-calc">${calcPreview(addForm.amount)}</div>
+      ${padMode ? amountPadHTML() : `<button type="button" class="link-btn" id="f-use-pad">Use the number pad</button>`}
     </div>
 
     <div class="row-2">
       <div class="field">
         <label>Date</label>
         <input class="input" id="f-date" type="date" value="${esc(addForm.date)}" />
+        <div class="date-chips">
+          <button type="button" class="chip mini" data-day="0" aria-pressed="${addForm.date === dayIso(0)}">Today</button>
+          <button type="button" class="chip mini" data-day="-1" aria-pressed="${addForm.date === dayIso(-1)}">Yesterday</button>
+        </div>
       </div>
       <div class="field">
         <label>Category</label>
@@ -249,6 +258,10 @@ export function renderAdd(){
     <button class="btn" id="f-save">${addForm.editingId ? 'Update' : 'Save'} Transaction</button>
     ${addForm.editingId ? '<button class="btn ghost" id="f-cancel" style="margin-top:10px;">Cancel Edit</button>' : ''}
   `;
+  // NEW(v3.1): unfolded, the form gets a context column (see renderAddSide).
+  v.innerHTML = isWide()
+    ? `<div class="split"><div class="split-main">${formHTML}</div><aside class="split-side" id="add-side" aria-live="polite"></aside></div>`
+    : formHTML;
 
   const setCategory = (cat) => {
     addForm.category = cat;
@@ -263,8 +276,15 @@ export function renderAdd(){
     addForm.offsetCategory = null;
     renderAdd();
   }));
-  $('#f-amount', v).addEventListener('input', e => addForm.amount = e.target.value);
-  $('#f-date', v).addEventListener('input', e => addForm.date = e.target.value);
+  $('#f-amount', v).addEventListener('input', e => { addForm.amount = e.target.value; amountChanged(); });
+  $('#f-date', v).addEventListener('input', e => { addForm.date = e.target.value; syncDateChips(); renderAddSide(); });
+  // NEW(v3.1): Today / Yesterday
+  $$('.date-chips .chip', v).forEach(ch => ch.addEventListener('click', () => {
+    addForm.date = dayIso(Number(ch.dataset.day));
+    $('#f-date', v).value = addForm.date;
+    syncDateChips(); renderAddSide();
+  }));
+  wireAmountPad(v);
 
   $$('.cat-chip', v).forEach(ch => ch.addEventListener('click', () => setCategory(ch.dataset.cat)));
 
@@ -344,6 +364,7 @@ export function renderAdd(){
       const guess = refundBudgetCategory({ type:'Refund', description: addForm.description });
       off.textContent = guess ? `${guess} (from merchant)` : 'Auto — from merchant';
     }
+    renderAddSide();
   });
   descInput.addEventListener('blur', () => {
     // Delay hide so a click on a suggestion registers
@@ -353,6 +374,149 @@ export function renderAdd(){
 
   $('#f-save', v).addEventListener('click', saveTransaction);
   if ($('#f-cancel', v)) $('#f-cancel', v).addEventListener('click', cancelEdit);
+  renderAddSide();
+}
+
+/* ── NEW(v3.1): number pad for the amount ─────────────────────────────
+   On the Fold's narrow cover screen the system keyboard covered half the
+   form (and the Save button). The pad lives under the amount: digits,
+   ⌫ (hold to clear), + / − for quick sums ("12.50+3.20"), ✓ to save, and
+   ⌨ to switch back to the system keyboard (remembered in flags). */
+const PAD_KEYS = ['1','2','3','⌫','4','5','6','+','7','8','9','−','⌨','0','.','✓'];
+const padModeOn = () => state.flags.amountInput !== 'keyboard';
+const dayIso = (offset) => { const d = new Date(); d.setDate(d.getDate() + offset); return toLocalISO(d); };
+
+function amountPadHTML(){
+  return `<div class="amt-pad" role="group" aria-label="Number pad">
+    ${PAD_KEYS.map(k => `<button type="button" class="pad-key${k === '✓' ? ' pad-save' : ''}${'+−⌫⌨'.includes(k) ? ' pad-op' : ''}" data-k="${k}" aria-label="${{ '⌫':'Backspace', '⌨':'Use keyboard', '✓':'Save', '−':'Minus', '+':'Plus' }[k] || k}">${k}</button>`).join('')}
+  </div>`;
+}
+
+function calcPreview(raw){
+  if (!/[+\-−]/.test(String(raw || '').slice(1))) return '';
+  const v = evalAmountExpr(raw);
+  return isNaN(v) ? '' : `= ${fmt(v)}`;
+}
+
+// Apply one key to the amount string (pure — exported for tests).
+export function applyPadKey(cur, k){
+  let s = String(cur || '');
+  const lastSeg = s.split(/[+−]/).pop();
+  if (k === '⌫') return s.slice(0, -1);
+  if (k === '+' || k === '−'){
+    if (!s) return s;
+    if (/[+−]$/.test(s)) return s.slice(0, -1) + k;     // swap operator
+    if (s.endsWith('.')) s = s.slice(0, -1);
+    return s + k;
+  }
+  if (k === '.'){
+    if (lastSeg.includes('.')) return s;
+    return s + (lastSeg === '' ? '0.' : '.');
+  }
+  if (/^\d$/.test(k)){
+    if (/\.\d\d$/.test(lastSeg)) return s;              // cents are full
+    if (lastSeg === '0') return s.slice(0, -1) + k;     // no leading zeros
+    return s + k;
+  }
+  return s;
+}
+
+function amountChanged(){
+  const calc = $('#f-amt-calc');
+  if (calc) calc.textContent = calcPreview(addForm.amount);
+  renderAddSide();
+}
+
+function syncDateChips(){
+  $$('#view-add .date-chips .chip').forEach(ch => ch.setAttribute('aria-pressed', String(addForm.date === dayIso(Number(ch.dataset.day)))));
+}
+
+function wireAmountPad(v){
+  $('#f-use-pad', v)?.addEventListener('click', async () => {
+    state.flags.amountInput = 'pad'; await saveFlags(); renderAdd();
+  });
+  const input = $('#f-amount', v);
+  let holdTimer = null;
+  $$('.pad-key', v).forEach(btn => {
+    const k = btn.dataset.k;
+    if (k === '⌫'){
+      // Hold ⌫ to clear the whole amount.
+      btn.addEventListener('pointerdown', () => { holdTimer = setTimeout(() => { holdTimer = 'fired'; addForm.amount = ''; input.value = ''; haptic(12); amountChanged(); }, 550); });
+      ['pointerup','pointerleave','pointercancel'].forEach(ev => btn.addEventListener(ev, () => { if (holdTimer && holdTimer !== 'fired') clearTimeout(holdTimer); }));
+    }
+    btn.addEventListener('click', async () => {
+      if (k === '⌫' && holdTimer === 'fired'){ holdTimer = null; return; }
+      holdTimer = null;
+      if (k === '✓'){ saveTransaction(); return; }
+      if (k === '⌨'){
+        state.flags.amountInput = 'keyboard'; await saveFlags(); renderAdd();
+        requestAnimationFrame(() => $('#f-amount')?.focus());
+        return;
+      }
+      haptic(4);
+      addForm.amount = applyPadKey(addForm.amount, k);
+      input.value = addForm.amount;
+      amountChanged();
+    });
+  });
+}
+
+/* ── NEW(v3.1): the unfolded Add form's context column ─────────────────
+   Everything you'd otherwise flip to another tab to check before saving:
+   the account's balance now → after this transaction, a duplicate warning
+   (same amount + account within 3 days), and your recent entries at this
+   merchant (or in this category). Updated in place as you type. */
+function renderAddSide(){
+  const side = $('#add-side');
+  if (!side) return;
+  const amt = evalAmountExpr(addForm.amount);   // v3.1: pad sums ("12.50+3.20")
+  const amtOk = !isNaN(amt) && amt > 0;
+  const editing = addForm.editingId ? state.transactions.find(t => t.id === addForm.editingId) : null;
+
+  // Balance now → after, for every account this transaction touches.
+  const aType = acctTypeMap();
+  const draft = { type: addForm.type, account: addForm.account, fromAccount: addForm.fromAccount, amount: amtOk ? amt : 0 };
+  const after = txnEffectsCents(draft, aType);
+  const before = editing ? txnEffectsCents(editing, aType) : {};
+  const names = [...new Set([addForm.account, addForm.fromAccount].filter(Boolean))];
+  const balRows = names.map(n => {
+    const now = balanceLatest(n);
+    const next = round2(now + ((after[n] || 0) - (before[n] || 0)) / 100);
+    const isDebt = aType[n] === 'Credit Card' || aType[n] === 'Loan';
+    const show = (b) => isDebt ? `${fmt(b)} owed` : fmt(b);
+    return `<div class="ds-row"><span>${esc(n)}</span><span class="mono">${show(now)}${amtOk && next !== now ? ` → <b>${show(next)}</b>` : ''}</span></div>`;
+  }).join('');
+
+  // Possible duplicate
+  let dup = null;
+  if (amtOk && addForm.account && /^\d{4}-\d{2}-\d{2}$/.test(addForm.date || '')){
+    dup = state.transactions.find(t => t.id !== addForm.editingId && t.account === addForm.account &&
+      Math.round(t.amount * 100) === Math.round(amt * 100) && t.date && Math.abs(daysBetween(t.date, addForm.date)) <= 3);
+  }
+
+  // Recent at this merchant, else in this category
+  const key = squash(merchantCore(addForm.description));
+  let recent = [], recentLabel = '';
+  if (key.length >= 3){
+    recent = state.transactions.filter(t => squash(merchantCore(t.description)) === key && t.id !== addForm.editingId);
+    recentLabel = `Recent at “${addForm.description.trim()}”`;
+  }
+  if (!recent.length && addForm.category){
+    recent = state.transactions.filter(t => t.type === addForm.type && t.category === addForm.category && t.id !== addForm.editingId);
+    recentLabel = `Recent in ${addForm.category}`;
+  }
+  recent = recent.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 6);
+
+  side.innerHTML = `
+    <h2 class="split-title">${addForm.editingId ? 'Editing' : 'Before you save'}</h2>
+    ${balRows ? `<div class="card" style="margin-bottom:14px;"><h3 class="card-title">Balance</h3>${balRows}</div>` : ''}
+    ${dup ? `<div class="debt-warn add-dup" style="margin-bottom:14px;">Possible duplicate: ${fmt(dup.amount)} on ${esc(dup.account)} on ${esc(dup.date)}${dup.description ? ' · ' + esc(dup.description) : ''}.</div>` : ''}
+    ${recent.length ? `
+      <div class="card">
+        <h3 class="card-title">${esc(recentLabel)}</h3>
+        ${recent.map(t => `<div class="ds-row"><span class="muted">${esc(t.date)} · ${esc(t.account)}</span><span class="mono">${fmt(t.amount)}</span></div>`).join('')}
+      </div>` : `<div class="split-empty">Type a description or pick a category to see your recent entries here.</div>`}
+  `;
 }
 
 // NEW(v3.0): the user overrode the account the form picked. If it's a
@@ -379,7 +543,7 @@ function offerCategoryRule(picked, previous){
 
 const saveTransaction = busyGuard(async () => {
   // FIX(v1.2): parseAmount — strips $/commas, rounds to cents, rejects junk.
-  const amt = parseAmount(addForm.amount);
+  const amt = evalAmountExpr(addForm.amount);   // v3.1: pad sums ("12.50+3.20")
   if (isNaN(amt) || amt <= 0) { toast('Enter a valid amount'); return; }
   // FIX(v3.0): a cleared date input used to save a dateless transaction that
   // vanished from every month view and from all balances.

@@ -20,6 +20,7 @@ import { balanceAt, balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { renderCurrent } from './app.js';
 import { trashTxn, restoreTxn } from './trash.js';
+import { isWide } from './layout.js';   // NEW(v3.1)
 
 /* ── Paid state ─────────────────────────────────────────────────────── */
 // paidMonths maps 'YYYY-MM' → id of the payment transaction. A monthly bill
@@ -310,7 +311,7 @@ export function renderBills(){
     </div>
   ` : '';
 
-  v.innerHTML = `
+  const mainHTML = `
     <div class="real-card" style="margin-top:0;">
       <div class="real-head">
         <div>
@@ -349,6 +350,11 @@ export function renderBills(){
 
     <button class="btn" id="add-bill" style="margin-top:18px;">+ Add Bill</button>
   `;
+  // NEW(v3.1): unfolded, a month calendar sits beside the list.
+  v.innerHTML = isWide()
+    ? `<div class="split"><div class="split-main">${mainHTML}</div><aside class="split-side">${billCalendarHTML(bills, year, month, isCurrentMonth, todayDay)}</aside></div>`
+    : mainHTML;
+  $$('.cal-bill', v).forEach(el => el.addEventListener('click', () => openBillSheet(el.dataset.billId)));
 
   $$('.bill-check', v).forEach(b => b.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -360,6 +366,46 @@ export function renderBills(){
   wireBillRows(v);
   $$('.bill-row[data-bill-id]', v).forEach(el => el.addEventListener('click', () => openBillSheet(el.dataset.billId)));
   $('#add-bill', v).addEventListener('click', () => openBillSheet(null));
+}
+
+/* ── NEW(v3.1): bills calendar (unfolded) ─────────────────────────────
+   The month as a grid with each bill on its due day, colored by status.
+   One-time bills carried from an earlier month (still unpaid) are listed
+   under the grid — their due day isn't in this month. */
+export function billCalendarHTML(bills, year, month, isCurrentMonth, todayDay){
+  const ym = ymOf(year, month);
+  const days = new Date(year, month, 0).getDate();
+  const lead = new Date(year, month - 1, 1).getDay();
+  const byDay = {};
+  const carried = [];
+  for (const b of bills){
+    let d;
+    if (b.recurrence === 'once'){
+      if (!b.dueDate) continue;
+      if (b.dueDate.slice(0, 7) !== ym){ carried.push(b); continue; }
+      d = Number(b.dueDate.slice(8, 10));
+    } else d = Math.min(getBillDueDay(b), days);
+    (byDay[d] || (byDay[d] = [])).push(b);
+  }
+  const chip = (b) => {
+    const st = billStatus(b, ym, isCurrentMonth, todayDay);
+    return `<button type="button" class="cal-bill ${st.kind}" data-bill-id="${esc(b.id)}" title="${esc(b.name)}">${esc(b.name)} <span class="mono">${fmtShort(getBillAmount(b, year, month))}</span></button>`;
+  };
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push('<div class="cal-cell blank"></div>');
+  for (let d = 1; d <= days; d++){
+    const isToday = isCurrentMonth && d === todayDay;
+    cells.push(`<div class="cal-cell${isToday ? ' today' : ''}${byDay[d] ? ' has' : ''}"><div class="cal-d">${d}</div>${(byDay[d] || []).map(chip).join('')}</div>`);
+  }
+  return `
+    <h2 class="split-title">${monthName(month)} ${year}</h2>
+    <div class="cal">
+      ${['S','M','T','W','T','F','S'].map(w => `<div class="cal-w">${w}</div>`).join('')}
+      ${cells.join('')}
+    </div>
+    ${carried.length ? `<div class="section-label">Carried over · unpaid</div>${carried.map(chip).join('')}` : ''}
+    <div class="muted small" style="margin-top:10px;">Tap a bill to edit it.</div>
+  `;
 }
 
 // FIX(v3.0): double-tap safe, per bill — two quick taps used to log two

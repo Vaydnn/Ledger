@@ -8,19 +8,127 @@
    both modules are fully loaded.
    ============================================================ */
 
-import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, esc } from './util.js';
+import { $, $$, monthAbbr, monthName, toast, toastAction, initRipples, esc, haptic } from './util.js';
 import { state, loadState, saveSelected, saveFlags, seedFromJSON, TAB_ID, purgeTombstones, scrubLegacyData } from './db.js';
 import { restoreJSON, maybeBackupNudge } from './manage.js';
 import { initSheet, openSheet, closeSheet, isSheetOpen } from './sheet.js';
 import { renderHome } from './home.js';
 import { renderBills } from './bills.js';
 import { renderAdd } from './add.js';
-import { renderTxns } from './txns.js';
+import { renderTxns, txnFilters, txnLayoutHandoff } from './txns.js';
 import { renderDebts } from './debts.js';
 import { renderMore } from './more.js';
 import { maybeAutoSnapshot } from './networth.js'; // NEW(v2.0)
 import { purgeTrash } from './trash.js';           // NEW(v2.0)
 import { ensureAnchorsMigrated, migrateLegacyBalances } from './balances.js'; // NEW(v3.0)
+import { applyLayoutClasses, onLayoutChange } from './layout.js';          // NEW(v3.1)
+
+/* ─── NEW(v3.1): fold ↔ unfold continuity ─────────────────────────────
+   Crossing the breakpoint re-renders the current view (Activity's list +
+   detail, the Add form's side column and Bills' calendar only exist
+   unfolded) — without losing your place:
+   - SCROLL: the first item at the top of the screen (a transaction row, a
+     Home card, a bill) is found again after the re-render and put back at
+     the same height. Fallback: the same fraction of the page.
+   - FOCUS: the field you were typing in keeps focus and cursor position.
+   - An open sheet stays open (CSS just switches it between bottom sheet
+     and side panel). Activity's selected transaction moves between the
+     pane and the sheet (txnLayoutHandoff). */
+const ANCHOR_SEL = '[data-id], [data-card], [data-bill-id], [data-goal], .txn-day, .field';
+function captureScrollAnchor(){
+  const view = $('.view.active');
+  if (!view) return null;
+  const top = 64;   // below the app bar
+  for (const el of view.querySelectorAll(ANCHOR_SEL)){
+    const r = el.getBoundingClientRect();
+    if (r.bottom > top && r.height > 0){
+      const key = ['data-id','data-card','data-bill-id','data-goal'].find(a => el.hasAttribute(a));
+      const val = key ? el.getAttribute(key) : null;
+      const sel = key ? `[${key}="${(window.CSS && CSS.escape) ? CSS.escape(val) : val}"]` : (el.id ? `#${el.id}` : null);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      return { sel, offset: r.top, frac: max > 0 ? window.scrollY / max : 0 };
+    }
+  }
+  return null;
+}
+function restoreScrollAnchor(a){
+  if (!a) return;
+  const el = a.sel && $(`.view.active ${a.sel}`);
+  if (el){ window.scrollBy(0, el.getBoundingClientRect().top - a.offset); return; }
+  const max = document.documentElement.scrollHeight - window.innerHeight;
+  window.scrollTo(0, Math.max(0, a.frac * max));
+}
+function captureFocus(){
+  const el = document.activeElement;
+  if (!el || !el.id || !/^(INPUT|TEXTAREA)$/.test(el.tagName)) return null;
+  let s = null, e = null;
+  try { s = el.selectionStart; e = el.selectionEnd; } catch(_){}
+  return { id: el.id, s, e };
+}
+function restoreFocus(f){
+  if (!f) return;
+  const el = document.getElementById(f.id);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  try { if (f.s != null) el.setSelectionRange(f.s, f.e); } catch(_){}
+}
+function setupLayoutChanges(){
+  onLayoutChange(({ wide }) => {
+    const anchor = captureScrollAnchor();
+    const focus = captureFocus();
+    applyLayoutClasses();
+    const after = state.view === 'txns' ? txnLayoutHandoff(wide) : null;
+    renderCurrent();
+    restoreScrollAnchor(anchor);
+    restoreFocus(focus);
+    if (after) after();
+  });
+}
+
+/* ── Month swipe (v2.9.2 Home; v3.1 also Bills + Activity) ─────────────
+   Swipe left/right to step a month; the picker stays for jumping far.
+   Guards: edge touches are ignored (Android back-gesture zone), the swipe
+   must be decisively horizontal, and swipes that START on something that
+   scrolls sideways (filter chips, category chips, type pills, the number
+   pad) are left alone. Activity only follows when it's showing one month.
+   Listeners live on the persistent view containers — wired once. */
+const SWIPE_IGNORE = '.txn-filters, .cat-chips, .type-pills, .amt-pad, .cal, input, textarea, .split-side';
+export function monthSwipeAllowed(view){
+  if (view === 'txns') return txnFilters.month === 'current' && !txnFilters.dateFrom && !txnFilters.dateTo;
+  return view === 'home' || view === 'bills';
+}
+export async function stepMonth(delta){
+  let { year, month } = state.selected;
+  month += delta;
+  if (month > 12){ month = 1; year++; }
+  if (month < 1){ month = 12; year--; }
+  state.selected = { year, month };
+  haptic(6);
+  await saveSelected();
+  renderAll();
+}
+function wireMonthSwipes(){
+  if (!('ontouchstart' in window)) return;
+  for (const view of ['home', 'bills', 'txns']){
+    const el = $(`#view-${view}`);
+    if (!el) continue;
+    let sx = 0, sy = 0, tracking = false;
+    el.addEventListener('touchstart', (e) => {
+      const t = e.touches[0];
+      tracking = t.clientX > 24 && t.clientX < window.innerWidth - 24 && !e.target.closest(SWIPE_IGNORE);
+      sx = t.clientX; sy = t.clientY;
+    }, { passive: true });
+    el.addEventListener('touchend', (e) => {
+      if (!tracking) return;
+      tracking = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - sx, dy = t.clientY - sy;
+      if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      if (!monthSwipeAllowed(view) || isSheetOpen()) return;
+      stepMonth(dx < 0 ? 1 : -1);
+    }, { passive: true });
+  }
+}
 
 /* ─── Navigation ─────────────────────────── */
 export function renderCurrent(){
@@ -220,6 +328,9 @@ async function init(){
   if (isFreshInstall()) showFirstRun();
 
   initSheet();
+  applyLayoutClasses();          // NEW(v3.1): folded / unfolded / posture on <body>
+  setupLayoutChanges();          // NEW(v3.1): fold ↔ unfold continuity
+  wireMonthSwipes();             // v3.1: Home + Bills + Activity
   renderAll();
 
   // NEW(v2.0): opportunistic monthly net-worth snapshot + trash purge.

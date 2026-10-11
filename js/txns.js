@@ -6,11 +6,12 @@
 
 import { $, $$, monthKey, monthName, parseLocalDate, today, toastAction, parseAmount, toCents, esc, haptic, busyGuard, toast } from './util.js';
 import { state, dbDel, dbPut } from './db.js';
-import { openSheet, closeSheet } from './sheet.js';
+import { openSheet, closeSheet, isSheetOpen } from './sheet.js';
 import { renderCurrent } from './app.js';
 import { startEdit } from './add.js';
 import { invalidateMerchantCache } from './merchants.js';
 import { trashTxn, restoreTxn } from './trash.js';
+import { isWide } from './layout.js';   // NEW(v3.1)
 
 // NEW(v2.0): amount + date-range filters. amtExact matches to the cent
 // (the "did I log that $77.18 charge?" case); min/max are inclusive bounds;
@@ -35,9 +36,14 @@ const RENDER_CAP = 150;
 let renderAll_ = false;
 export function resetRenderCap(){ renderAll_ = false; }
 
+// NEW(v3.1): unfolded, Activity is list + detail — the list on the left, the
+// selected transaction on the right (two cover-screen-width panes on the
+// Fold's inner display) instead of a sheet covering the list.
+let selectedTxnId = null;
+
 export function renderTxns(){
   const v = $('#view-txns');
-  v.innerHTML = `
+  const listPart = `
     <input class="input txn-search" id="t-search" type="search" placeholder="Search description, category, account…" value="${esc(txnFilters.search)}" />
     <div class="txn-filters">
       ${txnFilters.account ? `<button class="chip" data-acct-clear="1" aria-pressed="true">${esc(txnFilters.account)} ×</button>` : ''}
@@ -50,7 +56,11 @@ export function renderTxns(){
     </div>
     <div id="txn-results"></div>
   `;
+  v.innerHTML = isWide()
+    ? `<div class="split"><div class="split-main">${listPart}</div><aside class="split-side" id="txn-detail" aria-live="polite"></aside></div>`
+    : listPart;
   renderTxnResults();
+  renderTxnDetailPane();
 
   // NEW(v2.5): debounced — was filtering + rebuilding the list per keystroke.
   let searchT = null;
@@ -209,8 +219,104 @@ function renderTxnResults(){
       `).join('') + (truncated
         ? `<button class="btn ghost" id="txn-show-all" style="margin-top:10px;">Show all ${total} (${total - shown.length} more)</button>`
         : '');
-  $$('.txn', results).forEach(el => el.addEventListener('click', () => openTxnSheet(el.dataset.id)));
+  $$('.txn', results).forEach(el => {
+    if (el.dataset.id === selectedTxnId) el.classList.add('selected');
+    el.addEventListener('click', () => $('#txn-detail') ? selectTxn(el.dataset.id) : openTxnSheet(el.dataset.id));
+  });
   $('#txn-show-all', results)?.addEventListener('click', () => { renderAll_ = true; renderTxnResults(); });
+}
+
+// v3.1 (item 18): the transaction you're looking at survives fold/unfold.
+// Unfolding with its sheet open → the sheet closes and it's selected in the
+// pane; folding with one selected in the pane → it opens as the sheet.
+// Returns a callback to run after the view re-renders.
+export function txnLayoutHandoff(wide){
+  const sheetCard = $('#sheet.open #sheetBody .td-card');
+  if (wide && sheetCard){
+    selectedTxnId = sheetCard.dataset.txnId;
+    closeSheet();
+    return null;
+  }
+  if (!wide && selectedTxnId && !isSheetOpen()){
+    const id = selectedTxnId;
+    return () => openTxnSheet(id);
+  }
+  return null;
+}
+
+// v3.1: unfolded detail pane.
+export function selectTxn(id){
+  selectedTxnId = id;
+  $$('#txn-results .txn').forEach(el => el.classList.toggle('selected', el.dataset.id === id));
+  renderTxnDetailPane();
+}
+function renderTxnDetailPane(){
+  const pane = $('#txn-detail');
+  if (!pane) return;
+  const t = selectedTxnId && state.transactions.find(x => x.id === selectedTxnId);
+  if (!t){
+    if (selectedTxnId) selectedTxnId = null;
+    pane.innerHTML = `<div class="split-empty"><div class="big">Select a transaction</div>Its details, edit and delete appear here.</div>`;
+    return;
+  }
+  pane.innerHTML = `<h2 class="split-title">Transaction</h2>${txnDetailHTML(t)}`;
+  wireTxnDetail(pane, t, { onDeleted: () => { selectedTxnId = null; renderCurrent(); } });
+}
+
+/* ── Transaction detail — shared by the sheet (folded) and the pane ── */
+function txnDetailHTML(t){
+  return `
+    <div class="card td-card" data-txn-id="${esc(t.id)}" style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+        <div class="td-amount" style="font-family:'Instrument Serif',serif;font-size:30px;color:${t.type==='Income'||t.type==='Refund'?'var(--green)':t.type==='Expense'?'var(--red)':'var(--text)'};">$${t.amount.toFixed(2)}</div>
+        <div class="muted small">${esc(t.date)}</div>
+      </div>
+      <div style="font-size:14px;font-weight:500;">${esc(t.category || t.type)}</div>
+      <div class="muted small" style="margin-top:6px;">${esc(t.type)} · ${esc(t.account)}${t.fromAccount ? ' (from '+esc(t.fromAccount)+')' : ''}</div>
+      ${t.description ? `<div style="margin-top:10px;font-size:13.5px;">${esc(t.description)}</div>` : ''}
+    </div>
+    <button class="btn td-edit">Edit</button>
+    <button class="btn danger td-del" style="margin-top:10px;">Delete</button>
+  `;
+}
+
+function wireTxnDetail(root, t, { onDeleted, inSheet = false } = {}){
+  $('.td-edit', root).addEventListener('click', () => { if (inSheet) closeSheet(); startEdit(t); });
+  $('.td-del', root).addEventListener('click', busyGuard(async () => {
+    await deleteTransaction(t);
+    if (inSheet) closeSheet();
+    if (onDeleted) onDeleted(); else renderCurrent();
+  }));
+}
+
+// NEW(v2.0) soft delete — the txn moves to the trash store (30-day retention,
+// restorable from More → Trash) and the toast offers Undo. A bill payment's
+// paid flag is cleared (and restored by Undo — FIX v3.0).
+async function deleteTransaction(t){
+  await trashTxn(t);
+  await dbDel('transactions', t.id);
+  state.transactions = state.transactions.filter(x => x.id !== t.id);
+  const unlinked = [];
+  for (const bill of state.bills){
+    if (!bill.paidMonths) continue;
+    let changed = false;
+    for (const [ym, txnId] of Object.entries(bill.paidMonths)){
+      if (txnId === t.id){ delete bill.paidMonths[ym]; unlinked.push([bill, ym]); changed = true; }
+    }
+    if (changed) await dbPut('bills', bill);
+  }
+  invalidateMerchantCache();
+  haptic([10,30,10]); /* NEW(v2.2): destructive pattern */
+  toastAction('Deleted', 'Undo', async () => {
+    await restoreTxn({ ...t, deletedAt: Date.now() });
+    for (const [bill, ym] of unlinked){
+      bill.paidMonths = bill.paidMonths || {};
+      bill.paidMonths[ym] = t.id;
+      await dbPut('bills', bill);
+    }
+    renderCurrent();
+    toast('Restored');
+  });
 }
 
 function formatDayHeader(iso){
@@ -253,53 +359,9 @@ export function txnHTML(t){
 export function openTxnSheet(id){
   const t = state.transactions.find(x => x.id === id);
   if (!t) return;
-  $('#sheetBody').innerHTML = `
-    <h2>Transaction</h2>
-    <div class="card" style="margin-bottom:14px;">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
-        <div style="font-family:'Instrument Serif',serif;font-size:30px;color:${t.type==='Income'||t.type==='Refund'?'var(--green)':t.type==='Expense'?'var(--red)':'var(--text)'};">$${t.amount.toFixed(2)}</div>
-        <div class="muted small">${esc(t.date)}</div>
-      </div>
-      <div style="font-size:14px;font-weight:500;">${esc(t.category || t.type)}</div>
-      <div class="muted small" style="margin-top:6px;">${esc(t.type)} · ${esc(t.account)}${t.fromAccount ? ' (from '+esc(t.fromAccount)+')' : ''}</div>
-      ${t.description ? `<div style="margin-top:10px;font-size:13.5px;">${esc(t.description)}</div>` : ''}
-    </div>
-    <button class="btn" id="sh-edit">Edit</button>
-    <button class="btn danger" id="sh-del" style="margin-top:10px;">Delete</button>
-  `;
+  $('#sheetBody').innerHTML = `<h2>Transaction</h2>${txnDetailHTML(t)}`;
   openSheet();
-  $('#sh-edit').addEventListener('click', () => { closeSheet(); startEdit(t); });
-  $('#sh-del').addEventListener('click', busyGuard(async () => {
-    // NEW(v2.0): soft delete — the txn moves to the trash store (30-day
-    // retention, restorable from More → Trash) and the toast offers Undo.
-    await trashTxn(t);
-    await dbDel('transactions', t.id);
-    state.transactions = state.transactions.filter(x => x.id !== t.id);
-    // If this was a bill's payment, clear that bill's paid flag — otherwise the
-    // bill shows Paid with nothing behind it and Real Available overstates.
-    // FIX(v3.0): remember the links so Undo puts them back.
-    const unlinked = [];
-    for (const bill of state.bills){
-      if (!bill.paidMonths) continue;
-      let changed = false;
-      for (const [ym, txnId] of Object.entries(bill.paidMonths)){
-        if (txnId === t.id){ delete bill.paidMonths[ym]; unlinked.push([bill, ym]); changed = true; }
-      }
-      if (changed) await dbPut('bills', bill);
-    }
-    invalidateMerchantCache();
-    haptic([10,30,10]); /* NEW(v2.2): destructive pattern */
-    // FIX(v2.9.2): renderCurrent — this sheet also opens from Home's Recent card.
-    closeSheet(); renderCurrent();
-    toastAction('Deleted', 'Undo', async () => {
-      await restoreTxn({ ...t, deletedAt: Date.now() });
-      for (const [bill, ym] of unlinked){
-        bill.paidMonths = bill.paidMonths || {};
-        bill.paidMonths[ym] = t.id;
-        await dbPut('bills', bill);
-      }
-      renderCurrent();
-      toast('Restored');
-    });
-  }));
+  // FIX(v2.9.2): renderCurrent after delete — this sheet also opens from
+  // Home's Recent card and from Reconcile.
+  wireTxnDetail($('#sheetBody'), t, { inSheet: true });
 }

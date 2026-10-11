@@ -23,6 +23,7 @@
    ============================================================ */
 
 import { $, $$, esc, haptic } from './util.js';
+import { isWide } from './layout.js';
 
 const sheetState = {
   open: false,
@@ -31,8 +32,13 @@ const sheetState = {
   repushAfterPop: false // a sheet opened while a close's history.back() was in flight
 };
 
-export function openSheet(){
+// v3.1: opts.wide → on the unfolded screen this sheet opens as a centered
+// dialog instead of the side panel (wide content: Reconcile, Year View,
+// Forecast). The mode is set when a sheet OPENS; re-renders and pickers
+// inside an open sheet keep it unless they pass `wide` explicitly.
+export function openSheet(opts = {}){
   const sheet = $('#sheet');
+  if (!sheetState.open || opts.wide !== undefined) sheet.classList.toggle('sheet-wide', !!opts.wide);
   $('#backdrop').classList.add('open');
   sheet.classList.add('open');
   sheet.style.transform = '';            // clear any leftover drag offset
@@ -86,6 +92,7 @@ export function closeSheet(){
 // Wires backdrop click, back gesture, Esc, and drag-to-dismiss. Once, on boot.
 export function initSheet(){
   $('#backdrop').addEventListener('click', closeSheet);
+  $('#sheetClose')?.addEventListener('click', closeSheet); // NEW(v3.1): unfolded panels/dialogs
 
   window.addEventListener('popstate', () => {
     if (sheetState.ignoreNextPop){
@@ -133,7 +140,8 @@ function initDragToDismiss(){
     if (!sheetState.open) return;
     const t = e.touches[0];
     startY = t.clientY; startT = e.timeStamp; dy = 0; dragging = false;
-    eligible = !!e.target.closest('.sheet-handle');
+    // v3.1: unfolded the sheet is a side panel / dialog — no drag-down.
+    eligible = !isWide() && !!e.target.closest('.sheet-handle');
   }, { passive: true });
 
   sheet.addEventListener('touchmove', (e) => {
@@ -175,10 +183,9 @@ function initDragToDismiss(){
   sheet.addEventListener('touchcancel', end);
 }
 
-// At >=560px the sheet is centered with translateX(-50%); preserve it while dragging.
+// Drag only happens on the folded bottom sheet (v3.1).
 function sheetTransform(off){
-  const centered = window.matchMedia('(min-width: 560px)').matches;
-  return centered ? `translate(-50%, ${off}px)` : `translateY(${off}px)`;
+  return `translateY(${off}px)`;
 }
 
 /* ─── Generic bottom-sheet picker ──────────────────────────────── */

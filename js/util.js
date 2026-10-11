@@ -61,6 +61,25 @@ export const parseAmount = (raw) => {
   return round2(parseFloat(s));
 };
 
+// NEW(v3.1): amount with + / − arithmetic from the number pad
+// ("12.50+3.20−1" → 14.70), summed in cents. A plain number behaves exactly
+// like parseAmount. NaN for anything malformed.
+export const evalAmountExpr = (raw) => {
+  const s = String(raw ?? '').replace(/[$,\s]/g, '').replace(/[−–]/g, '-');
+  if (!s) return NaN;
+  if (!/[+-]/.test(s.slice(1))) return parseAmount(s);
+  const parts = s.match(/[+-]?[^+-]+/g);
+  if (!parts || parts.join('') !== s) return NaN;
+  let cents = 0;
+  for (const p of parts){
+    const sign = p[0] === '-' ? -1 : 1;
+    const n = parseAmount(p.replace(/^[+-]/, ''));
+    if (isNaN(n)) return NaN;
+    cents += sign * Math.round(n * 100);
+  }
+  return cents / 100;
+};
+
 /* ─── HTML escaping ───────────────────────────────
    FIX(v1.2): user-entered strings (descriptions, merchant names, account and
    category names) were interpolated into innerHTML raw — a description like
