@@ -1,8 +1,15 @@
-# Ledger PWA · v3.2.1
+# Ledger PWA · v3.2.2
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
-**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (29 suites, 1071 checks, synthetic data).
+**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (30 suites, 1106 checks, synthetic data).
+
+## What's new in v3.2.2
+
+- **The statement balance is something you enter, not something Ledger detects.** Pending charges often post to the *next* statement while you log them the day before, which made the calculated balance drift from your bank's. Now each card is on **I enter it** by default (switch per card to **Ledger calculates** in its sheet).
+- Until you enter it, the figure is shown as an **estimate** (`~$3,100`, "enter yours") on Home, the Bills row, the pay run and the forecast, and an insight reminds you. Once the next statement closes, it asks again.
+- You can type it right where you plan the payment: **Bills → Set payment** now has the **Statement balance** field, and still due, what's on the next statement and the difference update as you type.
+- **What's on the next statement is derived from your number** (balance − still due), so a charge you logged before the close that the bank posted after it lands where it belongs.
 
 ## What's new in v3.2.1
 

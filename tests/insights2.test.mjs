@@ -22,8 +22,8 @@ const kinds = () => ins.detectInsights(2026, 10, 30).map(i => i.kind);
 const find = (k) => ins.detectInsights(2026, 10, 30).find(i => i.kind === k);
 
 await dbPut('accounts', { id:'a1', name:'Main Checking', type:'Checking', active:true, order:0 });
-await dbPut('accounts', { id:'a2', name:'Gap Card', type:'Credit Card', active:true, order:1, closeDay: 22, graceDays: 25 });
-await dbPut('accounts', { id:'a3', name:'Due Card', type:'Credit Card', active:true, order:2, closeDay: 17, graceDays: 10 });
+await dbPut('accounts', { id:'a2', name:'Gap Card', type:'Credit Card', active:true, order:1, closeDay: 22, graceDays: 25, stmtMode:'auto' });
+await dbPut('accounts', { id:'a3', name:'Due Card', type:'Credit Card', active:true, order:2, closeDay: 17, graceDays: 10, stmtMode:'auto' });
 for (const [k, list] of Object.entries({ Expense:['Dining','Groceries','Phone','Rent'], Income:['Salary'], Refund:['Return'], Investment:['Brokerage'], CCPayment:['CC Payment'], LoanPayment:['Loan Payment'], Transfer:['Transfer'], BalanceTransfer:['Balance Transfer'] })){
   await dbPut('categories', { id:k, list });
 }

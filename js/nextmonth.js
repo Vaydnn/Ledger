@@ -203,7 +203,7 @@ export function payRunItems(year, month){
       const plan = plannedCardPayment(n, ym);     // NEW(v3.2): "I'll pay X"
       return { kind: 'card', name: n, amount: plan != null ? plan : due, from: payerFor(n),
                meta: (plan != null ? `paying ${fmt(plan)} of ${fmt(due)} · ` : '')
-                     + (s ? `statement closed ${fmtDay(parseLocalDate(s.closeIso))}${s.entered ? ' (entered)' : ''} · from ` : 'pay in full · from ') };
+                     + (s ? `statement closed ${fmtDay(parseLocalDate(s.closeIso))}${s.entered ? ' (entered)' : s.needsEntry ? ' (estimate)' : ''} · from ` : 'pay in full · from ') };
     })
     .filter(c => c.amount > 0.004 && c.from)
     .map(c => ({ ...c, meta: c.meta + c.from }));

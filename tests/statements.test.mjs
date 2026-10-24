@@ -83,9 +83,9 @@ type('#cs-amt', '3100'); await click($('#cs-save'), 150);
   const s = S.statementInfo('Rewards Card');
   check('the entered balance wins: 3100, flagged as entered', s.entered && near(s.statement, 3100) && near(s.remaining, 3100) && s.closeIso === '2026-10-22', JSON.stringify(s));
   check('…Ledger\'s own number is kept for comparison (3000)', near(s.computed, 3000));
-  check('…what you charged after the close is unchanged (210)', near(s.charged, 210));
+  check('…what is on the NEXT statement = everything owed beyond it (3210 − 3100 = 110)', near(s.charged, 110));
   check('…it is stored with the statement it belongs to', card().stmt.closeIso === '2026-10-22' && near(card().stmt.amount, 3100));
-  check('the sheet says so', /You entered this\. Ledger calculates \$3,000\.00/.test(text()) && !!$('#cs-clear'));
+  check('the sheet says so', /You entered this\./.test(text()) && !!$('#cs-clear'));
 }
 check('it survives a backup (account record carries it)', JSON.stringify(exportData().accounts.find(a => a.name === 'Rewards Card').stmt) === JSON.stringify({ closeIso:'2026-10-22', amount:3100 }));
 
@@ -95,7 +95,7 @@ await loadState(); state.flags.anchorsV3 = true; state.selected = { year: 2026, 
 {
   const s = S.statementInfo('Rewards Card');
   check('a payment since the close: statement stays 3100, still due 2600', near(s.statement, 3100) && near(s.paidSince, 500) && near(s.remaining, 2600), JSON.stringify(s));
-  check('(the payment is not counted as "charged")', near(s.charged, 210));
+  check('(the payment doesn\'t change what is on the next statement: 2710 owed − 2600 due = 110)', near(s.charged, 110));
 }
 // The next close goes back to computing.
 {
@@ -127,7 +127,7 @@ app.navigate('more'); app.navigate('home'); await tick(150);
   const c = $('.home-card[data-card="cards"]');
   const r = $$('.cs-row').find(x => /Rewards Card/.test(x.textContent));
   check('Home: closed Oct 22 · entered · due Nov 16', /Closed Oct 22 · entered · due Nov 16/.test(r.textContent), r.textContent.replace(/\s+/g, ' '));
-  check('…the still-due amount and what is on the next statement', /\$2,600\.00/.test(r.textContent) && /\$210\.00 charged since/.test(r.textContent));
+  check('…the still-due amount and what is on the next statement', /\$2,600\.00/.test(r.textContent) && /\$110\.00 charged since/.test(r.textContent));
   const meta = $('.acct-row[data-acct="Rewards Card"] .stmt-due');
   check('the account row shows the statement line', !!meta && /statement \$2,600\.00 due Nov 16/.test(meta.textContent), meta?.textContent);
   await click(meta, 100);

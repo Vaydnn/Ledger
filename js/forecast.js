@@ -300,7 +300,7 @@ export function buildEvents(days){
         if (c <= todayD){                                  // already closed → what's still due
           owed = i === 0 && info ? info.remaining : 0; carry = owed;
           extra = take(run, false); closed = true;
-          detail = `Statement closed ${dayLbl(c)}${info && info.entered ? ' (entered)' : ''}`;
+          detail = `Statement closed ${dayLbl(c)}${info && info.entered ? ' (entered)' : info && info.needsEntry ? ' (estimate)' : ''}`;
         } else {                                           // closes before the run
           carry = bal; charges = take(c, true); owed = carry + charges;
           extra = take(run, false);

@@ -10,7 +10,7 @@
 // reconcile memory, statement balances, charts, rollover budgets, daily
 // snapshots). v3.0.0: derived balances, account lifecycle, JSON-only backups.
 // See README.md for the full list.
-export const APP_VERSION = '3.2.1';
+export const APP_VERSION = '3.2.2';
 
 // Hard-coded baseline category lists. Used for:
 //   (1) Auto-restore on load if a list is empty but the user has existing data

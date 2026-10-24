@@ -295,7 +295,7 @@ function detectStatementGaps(){
   for (const a of state.accounts){
     if (!a.active || a.type !== 'Credit Card' || !cardCycle(a.name)) continue;
     const s = statementInfo(a.name);
-    if (!s || !s.entered) continue;
+    if (!s || !s.entered || s.manual) continue;       // in manual mode Ledger's own number isn't trusted — no gap to report
     const gap = s.statement - s.computed;
     if (Math.abs(gap) >= 5) out.push({ card: a.name, s, gap });
   }
@@ -311,11 +311,22 @@ function detectStatementsDue(){
     if (!a.active || a.type !== 'Credit Card' || !cardCycle(a.name)) continue;
     if (state.bills.some(b => b.recurrence === 'auto-cc' && b.active !== false && b.linkedAccount === a.name)) continue;
     const s = statementInfo(a.name);
-    if (!s || s.remaining < 1) continue;
+    if (!s || s.remaining < 1 || s.needsEntry) continue;     // an estimate isn't worth a due-date alarm
     const days = daysBetween(t, s.dueIso);
     if (days <= 7) out.push({ card: a.name, s, days });
   }
   return out.sort((x, y) => x.days - y.days);
+}
+
+// NEW(v3.2.2): cards whose latest statement hasn't been entered yet.
+function detectStatementsToEnter(){
+  const out = [];
+  for (const a of state.accounts){
+    if (!a.active || a.type !== 'Credit Card' || !cardCycle(a.name)) continue;
+    const s = statementInfo(a.name);
+    if (s && s.needsEntry && s.current > 1) out.push({ card: a.name, s });
+  }
+  return out;
 }
 
 // Variable bills that landed well off their recent average this month.
@@ -519,6 +530,17 @@ export function detectInsights(year, monthIdx, max=3){
         detail: g.gap > 0 ? `${fmt(g.gap)} missing — an unlogged charge, or a posting-date difference?` : `${fmt(-g.gap)} extra in Ledger — a duplicate or a charge your bank hasn't posted?`,
         tone: 'warn',
         weight: 93
+      });
+    }
+    for (const e of detectStatementsToEnter().slice(0, 1)){
+      all.push({
+        kind: 'stmt-enter',
+        _key: `enter:${e.card}:${e.s.closeIso}`,
+        _act: ['card', e.card],
+        title: `Enter ${esc(e.card)}'s statement balance`,
+        detail: `Its statement closed ${monthName(Number(e.s.closeIso.slice(5, 7)), true)} ${Number(e.s.closeIso.slice(8))}. Until you enter your bank's number, Ledger is guessing ~${fmt(e.s.remaining)}.`,
+        tone: 'neutral',
+        weight: 89
       });
     }
     for (const d of detectStatementsDue().slice(0, 1)){

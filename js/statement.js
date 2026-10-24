@@ -9,6 +9,13 @@
    The cycle comes from the card itself (Accounts → card → "Statement
    closes on day"), else from an Auto (CC) bill tracking it.
 
+   v3.2.2: the statement balance is ENTERED by default (stmtMode 'manual').
+   Pending charges post to the NEXT statement while you log them the day
+   before, so what Ledger adds up never quite matches the bank. Until you
+   enter it, the number shown is a calculated ESTIMATE (needsEntry); a card
+   can be switched back to "Ledger calculates" (stmtMode 'auto'). What's on
+   the next statement is derived from your number: balance − still due.
+
    v3.2: you can ENTER the statement balance your bank shows (account.stmt =
    { closeIso, amount }). It stands for that one statement only — once the
    next one closes, Ledger goes back to computing it. Charges made after the
@@ -40,6 +47,12 @@ export function lastClose(closeDay, todayIso = today()){
   return thisMonth <= t ? thisMonth : onMonth(t.getFullYear(), t.getMonth() - 1);
 }
 
+// 'manual' (you enter the bank's number — the default) | 'auto' (Ledger calculates).
+export function statementMode(name){
+  const a = state.accounts.find(x => x.name === name);
+  return a && a.stmtMode === 'auto' ? 'auto' : 'manual';
+}
+
 export function statementInfo(name, todayIso = today()){
   const cyc = cardCycle(name);
   if (!cyc) return null;
@@ -60,13 +73,18 @@ export function statementInfo(name, todayIso = today()){
   const a = state.accounts.find(x => x.name === name);
   const entered = !!(a && a.stmt && a.stmt.closeIso === closeIso && isFinite(Number(a.stmt.amount)));
   const statementC = entered ? toCents(a.stmt.amount) : computedC;
+  const remainingC = Math.max(0, statementC - paidC);
+  const manual = statementMode(name) === 'manual';
   return {
     closeIso, dueIso: toLocalISO(addDays(close, cyc.graceDays)),
     statement: fromCents(statementC), paidSince: fromCents(paidC),
-    remaining: fromCents(Math.max(0, statementC - paidC)),
+    remaining: fromCents(remainingC),
     current: fromCents(currentC), cycle: cyc,
     entered, computed: fromCents(computedC),
-    charged: fromCents(chargedC)       // purchases since it closed — they're on the NEXT statement
+    manual, needsEntry: manual && !entered,      // manual mode, nothing entered for this statement yet → the figures are an estimate
+    // What's on the NEXT statement: everything owed beyond this one. With your number
+    // that includes pending charges you logged before the close (the bank posts them after it).
+    charged: fromCents(entered ? Math.max(0, currentC - remainingC) : chargedC)
   };
 }
 

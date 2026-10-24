@@ -133,7 +133,11 @@ export function openHomeCustomizeSheet(){
 function statementMeta(a){
   if (a.type !== 'Credit Card') return '';
   const s = statementInfo(a.name);
-  if (!s || s.statement <= 0.004) return '';
+  if (!s || (s.statement <= 0.004 && !s.needsEntry)) return '';
+  if (s.needsEntry && s.remaining > 0.004){
+    const d = new Date(s.dueIso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return ` · <span class="stmt-due">statement ~${fmt(s.remaining)} · enter yours</span>`;
+  }
   const due = new Date(s.dueIso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   return s.remaining > 0.004
     ? ` · <span class="stmt-due">statement ${fmt(s.remaining)} due ${esc(due)}</span>`

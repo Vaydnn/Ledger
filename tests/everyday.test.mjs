@@ -488,6 +488,7 @@ const stm = await import('../js/statement.js');
   closeSheet(); await tick(20);
   const card = state.accounts.find(a => a.name === 'Stmt Card');
   check('saved on the account', card.closeDay === closeDay && card.graceDays === 25);
+  card.stmtMode = 'auto'; await dbPut('accounts', card);   // v3.2.2: this section tests the CALCULATED statement
 
   const s = stm.statementInfo('Stmt Card', T);
   check('statement closed 5 days ago', s.closeIso === D(-5) && s.dueIso === D(20));

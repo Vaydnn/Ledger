@@ -341,9 +341,9 @@ export function billRowHTML(b, ym, isCurrentMonth, todayDay){
   const stmt = isAuto && !isPaid && b.ccAmount === 'statement' ? statementInfo(b.linkedAccount) : null;
   const plan = isAuto && !isPaid ? plannedPayment(b, ym) : null;
   const planNote = isAuto && !isPaid
-    ? (plan != null && stmt ? `Paying ${fmt(plan)} of the ${fmt(stmt.remaining)} statement${plan < stmt.remaining - 0.004 ? ` · ${fmt(stmt.remaining - plan)} left` : ''}`
+    ? (plan != null && stmt ? `Paying ${fmt(plan)} of the ${stmt.needsEntry ? '~' : ''}${fmt(stmt.remaining)} statement${plan < stmt.remaining - 0.004 ? ` · ${fmt(stmt.remaining - plan)} left` : ''}`
       : plan != null ? `Paying ${fmt(plan)}`
-      : stmt ? `Statement ${fmt(stmt.remaining)} still due` : '')
+      : stmt ? (stmt.needsEntry ? `Statement ~${fmt(stmt.remaining)} still due (estimate — enter yours)` : `Statement ${fmt(stmt.remaining)} still due`) : '')
     : '';
   const tag = isOnce ? ' <span class="bill-once-tag">Once</span>'
            : isAuto ? ' <span class="bill-auto-tag">Auto</span>'
@@ -675,34 +675,48 @@ export function openBillAmountSheet(billId, ym, { pay = false } = {}){
    and the difference your amount leaves, live as you type. */
 function openCardPaymentSheet(bill, ym, { pay = false } = {}){
   const card = bill.linkedAccount;
+  const acct = state.accounts.find(a => a.name === card);
   const [y, m] = ym.split('-').map(Number);
   const s = statementInfo(card);
-  const owed = s ? s.remaining : Math.max(0, balanceLatest(card));
+  const owed0 = s ? s.remaining : Math.max(0, balanceLatest(card));
   const plan = plannedPayment(bill, ym);
-  const start = plan != null ? plan : owed;
-  const row = (l, r, cls = '') => `<div class="rb-row ${cls}"><span>${l}</span><span class="mono">${r}</span></div>`;
+  const start = plan != null ? plan : owed0;
+  const dd = (iso) => `${monthName(Number(iso.slice(5, 7)), true)} ${Number(iso.slice(8))}`;
   $('#sheetBody').innerHTML = `
     <h2>${esc(card)} · ${monthName(m, true)} ${y}</h2>
-    <div class="real-breakdown" style="margin-bottom:8px;">
-      ${s ? row(`Statement closed ${monthName(Number(s.closeIso.slice(5, 7)), true)} ${Number(s.closeIso.slice(8))}${s.entered ? ' (entered)' : ''}`, fmt(s.statement))
-          + row('− Paid since it closed', fmt(s.paidSince))
-          + row(`= Statement still due ${monthName(Number(s.dueIso.slice(5, 7)), true)} ${Number(s.dueIso.slice(8))}`, fmt(s.remaining), 'total')
-          + row('Charged since it closed (next statement)', fmt(s.charged))
-        : ''}
-      ${row('Current balance', fmt(balanceLatest(card)))}
-    </div>
+    ${s ? `
+      <div class="field"><label for="cp-stmt-amt">Statement balance — closed ${esc(dd(s.closeIso))}${s.needsEntry ? ' (not entered yet — this is an estimate)' : ''}</label>
+        <input class="input" id="cp-stmt-amt" type="text" inputmode="decimal" value="${s.statement.toFixed(2)}" /></div>
+      <div class="real-breakdown" style="margin:4px 0 8px;">
+        <div class="rb-row"><span>− Paid since it closed</span><span class="mono">${fmt(s.paidSince)}</span></div>
+        <div class="rb-row total"><span>= Still due ${esc(dd(s.dueIso))}</span><span class="mono" id="cp-due">${fmt(s.remaining)}</span></div>
+        <div class="rb-row"><span>On the next statement (owed beyond it)</span><span class="mono" id="cp-next">${fmt(s.charged)}</span></div>
+        <div class="rb-row"><span>Current balance</span><span class="mono">${fmt(balanceLatest(card))}</span></div>
+      </div>` : `
+      <div class="real-breakdown" style="margin:4px 0 8px;"><div class="rb-row"><span>Current balance</span><span class="mono">${fmt(balanceLatest(card))}</span></div></div>`}
     <div class="field" style="margin-top:12px;"><label for="cp-amt">What I'll pay</label>
       <input class="input" id="cp-amt" type="text" inputmode="decimal" value="${start.toFixed(2)}" /></div>
     <div id="cp-diff" class="muted small" style="margin:-4px 0 12px;line-height:1.5;"></div>
     ${pay ? '<button class="btn" id="cp-pay">Pay it</button><button class="btn ghost" id="cp-save" style="margin-top:10px;">Save amount only</button>'
-          : '<button class="btn" id="cp-save">Save amount</button><button class="btn secondary" id="cp-pay" style="margin-top:10px;">Save &amp; pay</button>'}
+          : '<button class="btn" id="cp-save">Save</button><button class="btn secondary" id="cp-pay" style="margin-top:10px;">Save &amp; pay</button>'}
     ${plan != null ? '<button type="button" class="btn ghost" id="cp-clear" style="margin-top:10px;">Use the full statement</button>' : ''}
-    <button type="button" class="btn ghost" id="cp-stmt" style="margin-top:10px;">Set the statement balance…</button>
   `;
   openSheet();
+  // The statement figure you type drives "still due", "next statement" and the difference, live.
+  const stmtVal = () => {
+    if (!s) return null;
+    const v = parseAmount($('#cp-stmt-amt').value);
+    return isNaN(v) || v < 0 ? null : round2(v);
+  };
+  const dueNow = () => { const sv = stmtVal(); return sv == null ? owed0 : Math.max(0, round2(sv - s.paidSince)); };
   const diff = () => {
     const v = parseAmount($('#cp-amt').value);
     const el = $('#cp-diff');
+    const owed = dueNow();
+    if (s){
+      $('#cp-due').textContent = fmt(owed);
+      $('#cp-next').textContent = fmt(Math.max(0, round2(s.current - owed)));
+    }
     if (isNaN(v) || v < 0){ el.textContent = ''; return; }
     const left = round2(owed - v);
     el.innerHTML = !s ? `Balance after paying ${fmt(v)}: ${fmt(Math.max(0, balanceLatest(card) - v))}.`
@@ -710,20 +724,32 @@ function openCardPaymentSheet(bill, ym, { pay = false } = {}){
       : left < -0.004 ? `${fmt(-left)} more than the statement — it goes toward what you've charged since.`
       : 'Pays the statement exactly.';
   };
-  $('#cp-amt').addEventListener('input', diff); diff();
+  $('#cp-amt').addEventListener('input', diff);
+  $('#cp-stmt-amt')?.addEventListener('input', diff);
+  diff();
   const read = () => {
     const v = parseAmount($('#cp-amt').value);
     if (isNaN(v) || v <= 0){ toast('Enter an amount to pay'); return null; }
     return round2(v);
   };
+  // Keep the statement figure if it changed (or was only an estimate).
+  const saveStatement = async () => {
+    const sv = stmtVal();
+    if (s && sv != null && acct && (s.needsEntry || !s.entered || !near2(sv, s.statement))){
+      acct.stmt = { closeIso: s.closeIso, amount: sv };
+      await dbPut('accounts', acct);
+    }
+  };
   $('#cp-save').addEventListener('click', busyGuard(async () => {
     const v = read(); if (v == null) return;
+    await saveStatement();
     await setPlanned(bill, ym, v);
     closeSheet(); renderCurrent();
     toast(`Paying ${fmt(v)} on ${card} for ${monthName(m, true)}`);
   }));
   $('#cp-pay').addEventListener('click', async () => {
     const v = read(); if (v == null) return;
+    await saveStatement();
     await setPlanned(bill, ym, v);
     closeSheet();
     await payBill(bill.id, v);
@@ -733,8 +759,8 @@ function openCardPaymentSheet(bill, ym, { pay = false } = {}){
     closeSheet(); renderCurrent();
     toast('Using the full statement');
   }));
-  $('#cp-stmt').addEventListener('click', () => openCardSheet(card));
 }
+const near2 = (a, b) => Math.abs(a - b) < 0.005;
 
 /* NEW(v3.2): link any transaction to a bill by hand — for a payment whose
    amount (or source account) doesn't match what the bill says. */

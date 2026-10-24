@@ -22,7 +22,7 @@
 import { $, $$, fmt, esc, today, toLocalISO, parseLocalDate, monthName, clamp, parseAmount, round2, uid, toast, busyGuard } from './util.js';
 import { state, dbPut, saveFlags } from './db.js';
 import { openSheet, closeSheet } from './sheet.js';
-import { statementInfo, cardCycle, cardPayMode, cycleSpending } from './statement.js';
+import { statementInfo, cardCycle, cardPayMode, cycleSpending, statementMode } from './statement.js';
 import { renderCurrent } from './app.js';
 import { openBillAmountSheet } from './bills.js';
 
@@ -54,6 +54,15 @@ export function renderCardsCard(){
             <div class="cs-l"><div class="cs-name">${esc(a.name)}</div><div class="muted small">Set when its statement closes →</div></div>
           </button>`;
         const due = fmtDay(s.dueIso);
+        if (s.needsEntry) return `
+          <button type="button" class="cs-row" data-card="${esc(a.name)}">
+            <div class="cs-l">
+              <div class="cs-name">${esc(a.name)}</div>
+              <div class="muted small">Closed ${esc(fmtDay(s.closeIso))} · due ${esc(due)}</div>
+              <div class="stmt-due small">Enter your statement balance →</div>
+            </div>
+            <div class="cs-r"><span class="mono amber">~${fmt(s.remaining)}</span><div class="muted small">estimate</div></div>
+          </button>`;
         return `
           <button type="button" class="cs-row" data-card="${esc(a.name)}">
             <div class="cs-l">
@@ -93,7 +102,7 @@ export function openCardSheet(name){
     <h2>${esc(name)}</h2>
     ${s ? `
       <div class="real-breakdown" style="margin-bottom:6px;">
-        ${row(`Statement · closed ${esc(fmtDay(s.closeIso))}`, `<b>${fmt(s.statement)}</b>`)}
+        ${row(`Statement · closed ${esc(fmtDay(s.closeIso))}${s.needsEntry ? ' (estimate)' : ''}`, `<b>${s.needsEntry ? '~' : ''}${fmt(s.statement)}</b>`)}
         ${row('− Paid since it closed', fmt(s.paidSince))}
         ${row(`= Still due by ${esc(fmtDay(s.dueIso))}`, `<span class="${s.remaining > 0.004 ? 'amber' : 'pos'}">${fmt(s.remaining)}</span>`, 'total')}
         ${row('Charged since it closed → next statement', fmt(s.charged))}
@@ -104,14 +113,26 @@ export function openCardSheet(name){
         <input class="input" id="cs-amt" type="text" inputmode="decimal" value="${s.statement.toFixed(2)}" />
       </div>
       <div class="muted small" style="margin:-4px 0 10px;line-height:1.5;">
-        ${s.entered ? `You entered this. Ledger calculates ${fmt(s.computed)} from your transactions.` : `Ledger calculates this from your transactions.`}
-        It counts for this statement only; spending after ${esc(fmtDay(s.closeIso))} goes on the next one.
+        ${s.entered ? `You entered this${s.manual ? '' : `; Ledger calculates ${fmt(s.computed)}`}.`
+          : s.manual ? `Not entered yet — the figures above are an estimate (${fmt(s.computed)} added up from your transactions, which can miss pending charges). Type the number from your bank.`
+          : `Ledger calculates this from your transactions.`}
+        It counts for this statement only; whatever you owe beyond it goes on the next one.
       </div>
       <button type="button" class="btn" id="cs-save">Save statement balance</button>
       ${s.entered ? '<button type="button" class="btn ghost" id="cs-clear" style="margin-top:8px;">Use Ledger\'s number</button>' : ''}
     ` : `
       <div class="muted small" style="line-height:1.55;margin-bottom:12px;">Tell Ledger when this card's statement closes and it can show the statement balance — what you owe — apart from what you charge after it.</div>
     `}
+
+    ${cyc ? `
+    <div class="nm-sec">
+      <div class="nm-sec-h">Statement balance</div>
+      <div class="seg" id="cs-smode" role="tablist">
+        <button type="button" class="seg-btn ${statementMode(name) === 'manual' ? 'active' : ''}" data-v="manual">I enter it</button>
+        <button type="button" class="seg-btn ${statementMode(name) === 'auto' ? 'active' : ''}" data-v="auto">Ledger calculates</button>
+      </div>
+      <div class="muted small" style="margin:8px 0 0;line-height:1.5;">Pending charges often post to the next statement while you log them the day before, so a calculated balance can drift from the bank's. "I enter it" uses your number.</div>
+    </div>` : ''}
 
     <div class="nm-sec">
       <div class="nm-sec-h">Billing cycle</div>
@@ -185,6 +206,11 @@ export function openCardSheet(name){
     refresh();
   }));
 
+  $$('#cs-smode .seg-btn').forEach(btn => btn.addEventListener('click', async () => {
+    acct.stmtMode = btn.dataset.v;
+    await dbPut('accounts', acct);
+    refresh();
+  }));
   $$('#cs-mode .seg-btn').forEach(btn => btn.addEventListener('click', async () => {
     state.flags.cardPay = { ...(state.flags.cardPay || {}), [name]: btn.dataset.v };
     await saveFlags();
