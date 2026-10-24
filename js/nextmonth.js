@@ -28,6 +28,7 @@ import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { buildEvents, bulkPayDay, runDatesBetween, payInFullCards, currentCash } from './forecast.js';
 import { isBillPaid, billAppliesToMonth, getBillAmount, getBillDueDay, isBillEstimated, isVariableBill, logBillPayment, plannedCardPayment } from './bills.js';
 import { renderCurrent } from './app.js';
+import { ignoreRecurring, unignoreRecurring } from './subscriptions.js';
 import { payerFor } from './cards.js';
 import { cardPayMode, statementInfo } from './statement.js';
 
@@ -40,7 +41,7 @@ function groupEvents(list){
   const m = new Map();
   for (const e of list){
     const k = `${e.kind}|${e.label}`;
-    const g = m.get(k) || { label: e.label, kind: e.kind, amount: 0, count: 0, first: e.date, last: e.date, detail: e.detail, est: false, acct: e.acct };
+    const g = m.get(k) || { label: e.label, kind: e.kind, amount: 0, count: 0, first: e.date, last: e.date, detail: e.detail, est: false, acct: e.acct, seriesKey: e.seriesKey };
     g.amount = round2(g.amount + e.amount); g.count++; g.last = e.date; g.est = g.est || !!e.est;
     m.set(k, g);
   }
@@ -115,10 +116,11 @@ export function openNextMonthSheet(){
     <div class="nm-row${total ? ' nm-total' : ''}${minor ? ' nm-minor' : ''}">
       <span class="nm-l">${esc(label)}${sub ? `<span class="nm-sub">${esc(sub)}</span>` : ''}</span>${right}
     </div>`;
+  // A projected charge came from a detected pattern — let it be dismissed right here.
   const evRow = (g) => row(
     `${g.est ? '~' : ''}${g.label}${g.count > 1 ? ` ×${g.count}` : ''}`,
-    g.amount < 0 ? out(g.amount) : inn(g.amount),
-    { sub: `${fmtDay(g.first)}${g.count > 1 ? ` – ${fmtDay(g.last)}` : ''}${g.detail ? ' · ' + g.detail : ''}`, minor: true });
+    (g.amount < 0 ? out(g.amount) : inn(g.amount)) + (g.seriesKey ? `<button type="button" class="link-btn nm-ignore" data-key="${esc(g.seriesKey)}" title="Not recurring" aria-label="Not recurring" style="margin-left:8px;">✕</button>` : ''),
+    { sub: `${fmtDay(g.first)}${g.count > 1 ? ` – ${fmtDay(g.last)}` : ''}${g.detail ? ' · ' + g.detail : ''}${g.seriesKey ? ' · tap ✕ if this isn\'t really recurring' : ''}`, minor: true });
   const list = (groups, max = 8) => groups.slice(0, max).map(evRow).join('')
     + (groups.length > max ? `<div class="nm-note" style="margin-top:2px;">+ ${groups.length - max} more</div>` : '');
   const runLabel = fmtDay(p.run);
@@ -168,6 +170,13 @@ export function openNextMonthSheet(){
   `;
   openSheet();
   $('#nm-payrun').addEventListener('click', () => openPayRunSheet());
+  $$('.nm-ignore').forEach(b => b.addEventListener('click', async () => {
+    const key = b.dataset.key;
+    await ignoreRecurring(key);
+    renderCurrent();
+    openNextMonthSheet();
+    toastAction('Won\'t be treated as recurring', 'Undo', async () => { await unignoreRecurring(key); renderCurrent(); openNextMonthSheet(); });
+  }));
   $('#nm-day').addEventListener('click', () => {
     openPicker('Pay-run day', Array.from({ length: 28 }, (_, i) => ({ value: String(i + 1), label: `The ${ordinal(i + 1)}` })), String(bulkPayDay()), async (val) => {
       state.flags.bulkPay = { day: Number(val) };

@@ -8,7 +8,7 @@
 // within 10 minutes of the previous one could fill its cache with the OLD
 // files straight out of the browser's HTTP cache — a new sw.js running last
 // release's code.
-const VERSION = 'ledger-v3.2.2';
+const VERSION = 'ledger-v3.2.3';
 const CORE = [
   './',
   './index.html',

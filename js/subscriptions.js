@@ -15,15 +15,28 @@
    tell recurring spend from variable spend exactly.
    ============================================================ */
 
-import { $, fmt, parseLocalDate, addDays, sumMoney, round2, esc, squash } from './util.js';
-import { state, dataVersion } from './db.js';
+import { $, $$, fmt, parseLocalDate, addDays, sumMoney, round2, esc, squash, toast } from './util.js';
+import { state, dataVersion, saveFlags } from './db.js';
 import { openSheet } from './sheet.js';
 import { merchantCore } from './merchants.js';
 
 /* ── NEW(v2.9.1): memoized per data version + calendar day ──────────── */
 let _recCache = new Map();
 let _recStamp = '';
-function recStamp(){ return `${dataVersion.n}|${new Date().toDateString()}`; }
+function recStamp(){ return `${dataVersion.n}|${new Date().toDateString()}|${(state.flags.recurIgnored || []).length}`; }
+
+/* NEW(v3.2.3): "Not recurring" — a detected series you've dismissed (a few
+   one-time purchases that happened to look regular). Keyed by the series key
+   (merchant / category), so it stays gone. */
+export function ignoreRecurring(key){
+  const list = state.flags.recurIgnored || [];
+  if (!list.includes(key)) state.flags.recurIgnored = [...list, key].slice(-100);
+  return saveFlags();
+}
+export function unignoreRecurring(key){
+  state.flags.recurIgnored = (state.flags.recurIgnored || []).filter(k => k !== key);
+  return saveFlags();
+}
 
 // Median + stdev helpers used for amount consistency / gap regularity tests
 const med = (arr) => {
@@ -195,6 +208,9 @@ export function detectRecurring(type='Expense', cutoffDays=400){
     if (rows.length === 2 && Math.round(rows[0].amount * 100) !== Math.round(rows[1].amount * 100)) continue;
     const s = analyzeSeries(rows, todayD) || (type === 'Income' ? recentRegime(rows, todayD) : null);
     if (!s) continue;
+    // v3.2.3: two charges 9 days apart are two purchases, not a weekly habit —
+    // with only two, the rhythm must be monthly or longer to count.
+    if (rows.length === 2 && s.canonDays < 30) continue;
     rows.forEach(r => claimed.add(r.id));
     results.push({
       key: 'm:' + key, type,
@@ -217,8 +233,10 @@ export function detectRecurring(type='Expense', cutoffDays=400){
   }
 
   results.sort((a,b) => b.monthlyEquiv - a.monthlyEquiv);
-  _recCache.set(cacheKey, results);
-  return results;
+  const ignored = state.flags.recurIgnored || [];
+  const kept = ignored.length ? results.filter(r => !ignored.includes(r.key)) : results;
+  _recCache.set(cacheKey, kept);
+  return kept;
 }
 
 /* ─── Subscriptions sheet (Expense-only view) ─────────────────────── */
@@ -279,6 +297,7 @@ export function openSubscriptionsSheet(){
                 <span class="muted small">${fmt(s.monthlyEquiv)}/mo · ${fmt(s.ytdSpend)} YTD${s.primaryAccount ? ' · ' + esc(s.primaryAccount) : ''}</span>
                 <span class="muted small">${pct.toFixed(0)}% of total</span>
               </div>
+              <div style="margin-top:6px;"><button type="button" class="link-btn sub-ignore" data-key="${esc(s.key)}">Not recurring</button></div>
             </div>
           `;
         }).join('')}
@@ -289,4 +308,9 @@ export function openSubscriptionsSheet(){
     </div>
   `;
   openSheet();
+  $$('.sub-ignore').forEach(b => b.addEventListener('click', async () => {
+    await ignoreRecurring(b.dataset.key);
+    toast('Won\'t be treated as recurring');
+    openSubscriptionsSheet();
+  }));
 }

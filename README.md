@@ -1,8 +1,13 @@
-# Ledger PWA · v3.2.2
+# Ledger PWA · v3.2.3
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
-**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (30 suites, 1106 checks, synthetic data).
+**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (31 suites, 1120 checks, synthetic data).
+
+## What's new in v3.2.3
+
+- **One-off purchases no longer get projected as recurring.** Two same-price purchases a few days apart (two $1.07 game buys 9 days apart) were read as a *weekly* charge and projected forever in Next month and the forecast. Two charges now only make a series when the rhythm is monthly or longer; weekly/bi-weekly needs three or more.
+- **"Not recurring."** Anything Ledger treats as recurring can be dismissed: ✕ on a projected charge in **Next month**, or **Not recurring** on a row in **Subscriptions & Recurring**. It's stored by merchant/category, stays gone, and the Next month ✕ has an Undo.
 
 ## What's new in v3.2.2
 

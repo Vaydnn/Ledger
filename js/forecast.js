@@ -203,7 +203,7 @@ export function buildEvents(days){
     const occs = projectOccurrences(r.last, r.canonDays, todayD, endD);
     for (const d of occs){
       events.push({
-        date:d, kind:'subscription', label:r.label, amount:-r.medAmt, acct:r.primaryAccount,
+        date:d, kind:'subscription', label:r.label, amount:-r.medAmt, acct:r.primaryAccount, seriesKey: r.key,
         cardCharge: onCard ? r.primaryAccount : undefined,
         detail:`${r.cadence} · ${r.category}${r.primaryAccount && !isCashAcct(r.primaryAccount) ? ' · ' + r.primaryAccount : ''}`
       });
