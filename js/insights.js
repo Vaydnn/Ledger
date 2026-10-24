@@ -1,27 +1,40 @@
 /* ============================================================
-   insights.js — auto-detected observations about the current month.
+   insights.js — what's worth a look right now.
 
-   Produces up to ~3 insights, each {kind, title, detail, tone},
-   chosen from a set of detectors:
+   v3.2 rewrite. The old card filled itself with things that are always true
+   ("5 months in the green", "Biggest category: Groceries", "on pace for…" —
+   the Pace card already says that), so it read the same every day. Now an
+   insight has to be NEW or ACTIONABLE, and the card disappears when there
+   is nothing to say:
 
-   - outlierCategory   — spending in a category is unusually high or low
-                         vs its 6-month median
-   - streakPositive    — N consecutive months with positive net
-   - monthVsAvg        — income or expense this month vs 6-month average
-   - biggestCategory   — the largest expense category this month
-   - dayOfMonthBurn    — spend pace vs calendar pace, for the current month
-   - newCategory       — a category showing up this month that hasn't
-                         appeared in recent months
+   - dup-suspect     possible double-logged transaction
+   - budget-breach   a category over budget with real month left
+   - price-change    a subscription changed price
+   - outlier-high/low  a category far from its 6-month median — now naming
+                       the merchant behind it
+   - income-down     income well below average
+   - bill-cluster    several bills in the next 7 days
+   - big-ticket      a top-5% expense
+   - NEW cash-tight        the next pay run (or payday) leaves you short
+   - NEW stmt-gap          the statement balance you entered doesn't match what
+                           Ledger computes — something is missing or doubled
+   - NEW stmt-due          a card's statement is due within a week (or past due)
+   - NEW variable-bill     a variable bill came in well off its average
+   - NEW week              the last 7 days vs a typical week
 
-   Tone: 'good' | 'warn' | 'neutral' — drives the card's color accent.
+   Every insight can be dismissed (×) — it stays gone until its subject
+   changes (the dismissal is keyed to the month, merchant, statement…). Rows
+   open the thing they're about. Tone: 'good' | 'warn' | 'neutral'.
    ============================================================ */
 
-import { monthKey, monthName, fmt, fmtShort, toCents, fromCents, daysBetween, esc } from './util.js';
+import { monthKey, monthName, fmt, fmtShort, toCents, fromCents, daysBetween, esc, today, addDays, toLocalISO, parseLocalDate } from './util.js';
 import { state, dataVersion } from './db.js';
 import { monthTotals } from './effects.js';
-import { computePace } from './pace.js';                    // NEW(v2.8)
 import { detectRecurring } from './subscriptions.js';        // NEW(v2.8)
-import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid } from './bills.js'; // NEW(v2.8)
+import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid, isVariableBill, billActual, billHistory } from './bills.js'; // NEW(v2.8)
+import { statementInfo, cardCycle } from './statement.js';   // NEW(v3.2)
+import { nextMonthPlan } from './nextmonth.js';              // NEW(v3.2)
+import { merchantCore } from './merchants.js';               // NEW(v3.2)
 import { budgetSpentMap, budgetMonth } from './budgets.js'; // NEW(v3.0), v3.1
 
 // Median of a numeric array
@@ -215,25 +228,6 @@ function detectBigTicket(year, monthIdx){
   return { txn: biggest };
 }
 
-// Consecutive months with positive net, looking back from (year, monthIdx)
-function detectPositiveStreak(year, monthIdx){
-  let streak = 0;
-  let y = year, m = monthIdx;
-  while (true){
-    const t = monthTotals(y, m);
-    if (t.net > 0) streak += 1;
-    else break;
-    m -= 1;
-    if (m < 1){ m = 12; y -= 1; }
-    if (streak > 24) break; // sanity cap
-    // Stop if we go beyond any data we have
-    const ym = `${y}-${String(m).padStart(2,'0')}`;
-    const anyData = state.transactions.some(tt => (tt.date || '').startsWith(ym)); /* FIX(v2.10.2): dateless records */
-    if (!anyData) break;
-  }
-  return streak;
-}
-
 // Compare current month's total (for a txn type) to the 6-month average.
 // Returns {ratio, diff, current, avg} or null if insufficient history.
 function compareToAvg(type, year, monthIdx){
@@ -264,40 +258,105 @@ function compareToAvg(type, year, monthIdx){
   return { current, avg, ratio: current / avg, diff: current - avg };
 }
 
-function detectBiggestCategory(year, monthIdx){
-  const map = categoryMap('Expense', year, monthIdx);
-  let best = null, max = 0;
-  for (const [cat, amt] of Object.entries(map)){
-    if (amt > max){ max = amt; best = cat; }
+/* ── NEW(v3.2) detectors ─────────────────────────────────────────── */
+
+// Who is behind a category's month: its top merchant, when one stands out.
+function topMerchant(category, year, monthIdx){
+  const ym = `${year}-${String(monthIdx).padStart(2,'0')}`;
+  const by = {};
+  let total = 0;
+  for (const t of state.transactions){
+    if (t.type !== 'Expense' || t.category !== category || !t.date || monthKey(t.date) !== ym) continue;
+    const name = merchantCore(String(t.description ?? '')) || String(t.description ?? '').trim();
+    total += toCents(t.amount);
+    if (!name) continue;
+    const g = by[name] || (by[name] = { name, c: 0, n: 0 });
+    g.c += toCents(t.amount); g.n++;
   }
-  if (!best) return null;
-  const total = Object.values(map).reduce((s,v) => s+v, 0);
-  return { category:best, amount:max, shareOfExpenses: total > 0 ? max/total : 0 };
+  const best = Object.values(by).sort((a, b) => b.c - a.c)[0];
+  if (!best || best.c < total * 0.4) return null;
+  return { name: best.name, amount: fromCents(best.c), count: best.n };
 }
 
-// Burn rate pacing — only meaningful for the currently-ongoing month.
-// Compares actual expenses vs the pace expected based on days elapsed.
-function detectBurnRate(year, monthIdx){
+// The cash side: does the next pay run (or payday) leave you short?
+function detectCashTight(year, monthIdx){
   const now = new Date();
   if (now.getFullYear() !== year || now.getMonth() + 1 !== monthIdx) return null;
+  let p;
+  try { p = nextMonthPlan(); } catch (e){ return null; }
+  if (!p || !p.run) return null;
+  if (p.low.amount >= 200) return null;
+  return { amount: p.low.amount, date: p.low.date, run: p.run };
+}
 
+// Cards whose entered statement balance disagrees with what Ledger computes.
+function detectStatementGaps(){
+  const out = [];
+  for (const a of state.accounts){
+    if (!a.active || a.type !== 'Credit Card' || !cardCycle(a.name)) continue;
+    const s = statementInfo(a.name);
+    if (!s || !s.entered) continue;
+    const gap = s.statement - s.computed;
+    if (Math.abs(gap) >= 5) out.push({ card: a.name, s, gap });
+  }
+  return out.sort((x, y) => Math.abs(y.gap) - Math.abs(x.gap));
+}
+
+// Statements still unpaid and due within a week (or past due). A card an
+// Auto (CC) bill already tracks gets its reminders from the bill.
+function detectStatementsDue(){
+  const t = today();
+  const out = [];
+  for (const a of state.accounts){
+    if (!a.active || a.type !== 'Credit Card' || !cardCycle(a.name)) continue;
+    if (state.bills.some(b => b.recurrence === 'auto-cc' && b.active !== false && b.linkedAccount === a.name)) continue;
+    const s = statementInfo(a.name);
+    if (!s || s.remaining < 1) continue;
+    const days = daysBetween(t, s.dueIso);
+    if (days <= 7) out.push({ card: a.name, s, days });
+  }
+  return out.sort((x, y) => x.days - y.days);
+}
+
+// Variable bills that landed well off their recent average this month.
+function detectVariableBills(year, monthIdx){
   const ym = `${year}-${String(monthIdx).padStart(2,'0')}`;
-  const expenses = fromCents(state.transactions
-    .filter(t => t.type === 'Expense' && t.date && monthKey(t.date) === ym)
-    .reduce((s,t) => s + toCents(t.amount), 0));
-  if (expenses < 100) return null;
+  const out = [];
+  for (const b of state.bills){
+    if (!isVariableBill(b) || b.active === false) continue;
+    const actual = billActual(b, ym);
+    if (actual == null) continue;
+    const prior = billHistory(b).filter(([k]) => k < ym).slice(-3);
+    if (prior.length < 2) continue;
+    const avg = mean(prior.map(([, a]) => a));
+    const diff = actual - avg;
+    if (Math.abs(diff) < Math.max(10, avg * 0.08)) continue;
+    out.push({ bill: b, actual, avg, diff });
+  }
+  return out.sort((x, y) => Math.abs(y.diff) - Math.abs(x.diff));
+}
 
-  const day = now.getDate();
-  const daysInMonth = new Date(year, monthIdx, 0).getDate();
-
-  // Project full-month spend based on daily rate
-  const projected = (expenses / day) * daysInMonth;
-
-  // Compare projected to 6-mo avg expense
-  const avgCmp = compareToAvg('Expense', year, monthIdx);
-  if (!avgCmp) return null;
-
-  return { projected, elapsed:day, total:daysInMonth, avg:avgCmp.avg };
+// The last 7 days of spending vs a typical week (the median of the 8 before).
+function detectWeek(year, monthIdx){
+  const now = new Date();
+  if (now.getFullYear() !== year || now.getMonth() + 1 !== monthIdx) return null;
+  const end = today();
+  const sumRange = (fromIso, toIso) => fromCents(state.transactions
+    .filter(t => t.type === 'Expense' && t.date && t.date >= fromIso && t.date <= toIso)
+    .reduce((s, t) => s + toCents(t.amount), 0));
+  const d = parseLocalDate(end);
+  const week = sumRange(toLocalISO(addDays(d, -6)), end);
+  const prior = [];
+  for (let i = 1; i <= 8; i++) prior.push(sumRange(toLocalISO(addDays(d, -6 - 7 * i)), toLocalISO(addDays(d, -7 * i))));
+  const nonZero = prior.filter(v => v > 0);
+  if (nonZero.length < 6) return null;
+  const typical = med(nonZero);
+  if (typical < 50) return null;
+  const diff = week - typical;
+  if (Math.abs(diff) < 75) return null;
+  const ratio = week / typical;
+  if (ratio >= 1.4 || ratio <= 0.6) return { week, typical, ratio, diff, end };
+  return null;
 }
 
 /* ─── Top-level aggregator ─────────────────────────── */
@@ -312,21 +371,9 @@ let _insKey = '';
 export function detectInsights(year, monthIdx, max=3){
   // Cache key includes the dismissed-dup count: dismissing writes to meta
   // (unversioned by design), so it wouldn't bump dataVersion on its own.
-  const key = `${dataVersion.n}|${year}-${monthIdx}|${max}|${(state.flags.dismissedDups || []).length}|${new Date().toDateString()}`;
+  const key = `${dataVersion.n}|${year}-${monthIdx}|${max}|${(state.flags.dismissedDups || []).length}|${Object.keys(state.flags.insightDismissed || {}).length}|${new Date().toDateString()}`;
   if (_insCache && _insKey === key) return _insCache;
   const all = [];
-
-  // Streak: positive runs are a morale win
-  const streak = detectPositiveStreak(year, monthIdx);
-  if (streak >= 2){
-    all.push({
-      kind: 'streak',
-      title: `${streak} month${streak===1?'':'s'} in the green`,
-      detail: `Net has been positive ${streak} months running.`,
-      tone: 'good',
-      weight: streak >= 4 ? 95 : 70
-    });
-  }
 
   // Outlier categories — the most actionable insight
   const outliers = detectOutlierCategories(year, monthIdx);
@@ -336,17 +383,22 @@ export function detectInsights(year, monthIdx, max=3){
     // detector emits highs from 1.2× up; the old >=1.5 gate here dumped a
     // 1.2–1.5× high into the "low spend" branch ("only 144% of typical").
     if (o.ratio > 1){
+      const who = topMerchant(o.category, year, monthIdx);
       all.push({
         kind: 'outlier-high',
         _category: o.category,
+        _key: `out:${year}-${monthIdx}:${o.category}`,
+        _act: ['category', o.category],
         title: `${esc(o.category)} is ${pct}% of your 6-mo median`,
-        detail: `${fmt(o.current)} this month vs ${fmt(o.median)} typical.`,
+        detail: `${fmt(o.current)} this month vs ${fmt(o.median)} typical.${who ? ` Mostly ${esc(who.name)}: ${fmt(who.amount)}${who.count > 1 ? ` over ${who.count} charges` : ''}.` : ''}`,
         tone: 'warn',
         weight: 90 + Math.min(20, Math.round((o.ratio - 1) * 30))
       });
     } else {
       all.push({
         kind: 'outlier-low',
+        _key: `low:${year}-${monthIdx}:${o.category}`,
+        _act: ['category', o.category],
         title: `${esc(o.category)} is only ${pct}% of typical`,
         detail: `${fmt(o.current)} vs ${fmt(o.median)} typical — nice restraint.`,
         tone: 'good',
@@ -355,19 +407,12 @@ export function detectInsights(year, monthIdx, max=3){
     }
   }
 
-  // Month-vs-average for income
+  // Month-vs-average for income (only the worrying direction — a good month needs no card)
   const incCmp = compareToAvg('Income', year, monthIdx);
-  if (incCmp && incCmp.ratio >= 1.2){
-    all.push({
-      kind: 'income-up',
-      title: `Income is ${Math.round(incCmp.ratio * 100)}% of 6-mo avg`,
-      detail: `${fmt(incCmp.current)} this month vs ${fmt(incCmp.avg)} typical.`,
-      tone: 'good',
-      weight: 75
-    });
-  } else if (incCmp && incCmp.ratio <= 0.7){
+  if (incCmp && incCmp.ratio <= 0.7){
     all.push({
       kind: 'income-down',
+      _key: `inc:${year}-${monthIdx}`,
       title: `Income down — ${Math.round(incCmp.ratio * 100)}% of avg`,
       detail: `${fmt(incCmp.current)} vs ${fmt(incCmp.avg)} typical.`,
       tone: 'warn',
@@ -375,39 +420,13 @@ export function detectInsights(year, monthIdx, max=3){
     });
   }
 
-  // Burn rate — NEW(v2.8): runs on the pace engine (fixed/variable split,
-  // recurring-income aware) instead of the naive linear projection, and
-  // compares against the 6-mo average expense.
-  const liveMonth = new Date().getFullYear() === year && new Date().getMonth() + 1 === monthIdx;
-  if (liveMonth){
-    const expCmp = compareToAvg('Expense', year, monthIdx);
-    if (expCmp){
-      const p = computePace();
-      if (p.projSpend > expCmp.avg * 1.15){
-        all.push({
-          kind: 'burn',
-          title: `On pace for ${fmtShort(p.projSpend)} in expenses`,
-          detail: `${fmtShort(p.projSpend - expCmp.avg)} above your 6-mo average · ${fmtShort(p.fixedRemaining)} of it is known bills still to hit.`,
-          tone: 'warn',
-          weight: 85
-        });
-      } else if (p.projSpend > 0 && p.projSpend < expCmp.avg * 0.85){
-        all.push({
-          kind: 'burn-under',
-          title: `On pace for ${fmtShort(p.projSpend)} — light month`,
-          detail: `${fmtShort(expCmp.avg - p.projSpend)} below your 6-mo average if the pace holds.`,
-          tone: 'good',
-          weight: 65
-        });
-      }
-    }
-  }
-
   // NEW(v2.8): early budget breach — over budget with real month left
   for (const br of detectEarlyBudgetBreach(year, monthIdx).slice(0, 1)){
     all.push({
       kind: 'budget-breach',
       _category: br.category,
+      _key: `bud:${year}-${monthIdx}:${br.category}`,
+      _act: ['budgets'],
       title: `${esc(br.category)} already over budget`,
       detail: `${fmt(br.used)} spent vs ${fmt(br.target)} budgeted, with ${br.daysLeft} days left in the month.`,
       tone: 'warn',
@@ -421,7 +440,8 @@ export function detectInsights(year, monthIdx, max=3){
     const d = dups[0];
     all.push({
       kind: 'dup-suspect',
-      _dismissKey: d.key, // NEW(v2.9.2): renders a × that remembers the pair
+      _dismissKey: d.key,
+      _act: ['txn', d.b.id], // NEW(v2.9.2): renders a × that remembers the pair
       title: `Possible duplicate: 2× ${fmt(d.a.amount)} on ${esc(d.a.account)}`,
       detail: `${esc(d.a.date)} and ${esc(d.b.date)}${d.a.description ? ' · ' + esc(String(d.a.description)) : ''} — same amount ${d.gap === 0 ? 'same day' : Math.round(d.gap) + 'd apart'}. Real, or logged twice?`,
       tone: 'warn',
@@ -436,6 +456,8 @@ export function detectInsights(year, monthIdx, max=3){
     all.push({
       kind: 'price-change',
       _category: r.category,
+      _key: `price:${r.label}:${r.priceChange.to}`,
+      _act: ['subs'],
       title: `${esc(r.label)} ${up ? 'went up' : 'went down'}: ${fmt(r.priceChange.from)} → ${fmt(r.priceChange.to)}`,
       detail: `${up ? '+' : '−'}${fmt(Math.abs(r.priceChange.to - r.priceChange.from))} per ${r.cadence.toLowerCase()} charge${up ? ' — worth a look.' : '.'}`,
       tone: up ? 'warn' : 'good',
@@ -448,6 +470,8 @@ export function detectInsights(year, monthIdx, max=3){
   if (cluster){
     all.push({
       kind: 'bill-cluster',
+      _key: `cluster:${today()}`,
+      _act: ['bills'],
       title: `${cluster.count} bills due in the next 7 days`,
       detail: `${fmt(cluster.sum)} total — make sure the cash side is ready.`,
       tone: 'neutral',
@@ -460,6 +484,8 @@ export function detectInsights(year, monthIdx, max=3){
   if (bigT){
     all.push({
       kind: 'big-ticket',
+      _key: `big:${bigT.txn.id}`,
+      _act: ['txn', bigT.txn.id],
       title: `Top-5% expense: ${fmt(bigT.txn.amount)}`,
       detail: `${esc(bigT.txn.category || '')}${bigT.txn.description ? ' · ' + esc(String(bigT.txn.description)) : ''} on ${esc(bigT.txn.date)}.`,
       tone: 'neutral',
@@ -467,15 +493,73 @@ export function detectInsights(year, monthIdx, max=3){
     });
   }
 
-  // Biggest category — always true but only surface if nothing else
-  const big = detectBiggestCategory(year, monthIdx);
-  if (big && big.amount > 50){
+  // NEW(v3.2): the cash side — the next pay run leaves you short
+  const tight = detectCashTight(year, monthIdx);
+  if (tight){
+    const neg = tight.amount < 0;
     all.push({
-      kind: 'biggest',
-      title: `Biggest category: ${esc(big.category)}`,
-      detail: `${fmt(big.amount)} · ${Math.round(big.shareOfExpenses*100)}% of expenses`,
-      tone: 'neutral',
-      weight: 30
+      kind: 'cash-tight',
+      _key: `dip:${toLocalISO(tight.run)}`,
+      _act: ['nextmonth'],
+      title: neg ? `Cash runs ${fmtShort(-tight.amount)} short around ${monthName(tight.date.getMonth() + 1, true)} ${tight.date.getDate()}` : `Cash gets tight: ${fmtShort(tight.amount)} left around ${monthName(tight.date.getMonth() + 1, true)} ${tight.date.getDate()}`,
+      detail: `After the ${monthName(tight.run.getMonth() + 1, true)} ${tight.run.getDate()} pay run, until the next paycheck lands. Open Next month to see what's in it.`,
+      tone: 'warn',
+      weight: neg ? 98 : 94
+    });
+  }
+
+  // NEW(v3.2): a statement balance you entered that Ledger can't reproduce
+  if (new Date().getFullYear() === year && new Date().getMonth() + 1 === monthIdx){
+    for (const g of detectStatementGaps().slice(0, 1)){
+      all.push({
+        kind: 'stmt-gap',
+        _key: `gap:${g.card}:${g.s.closeIso}:${Math.round(g.gap)}`,
+        _act: ['card', g.card],
+        title: `${esc(g.card)}: your bank says ${fmt(g.s.statement)}, Ledger has ${fmt(g.s.computed)}`,
+        detail: g.gap > 0 ? `${fmt(g.gap)} missing — an unlogged charge, or a posting-date difference?` : `${fmt(-g.gap)} extra in Ledger — a duplicate or a charge your bank hasn't posted?`,
+        tone: 'warn',
+        weight: 93
+      });
+    }
+    for (const d of detectStatementsDue().slice(0, 1)){
+      all.push({
+        kind: 'stmt-due',
+        _key: `due:${d.card}:${d.s.closeIso}`,
+        _act: ['card', d.card],
+        title: d.days < 0 ? `${esc(d.card)} statement is ${-d.days}d past due` : d.days === 0 ? `${esc(d.card)} statement is due today` : `${esc(d.card)} statement due in ${d.days}d`,
+        detail: `${fmt(d.s.remaining)} still due of the ${fmt(d.s.statement)} statement that closed ${monthName(Number(d.s.closeIso.slice(5, 7)), true)} ${Number(d.s.closeIso.slice(8))}.`,
+        tone: d.days <= 3 ? 'warn' : 'neutral',
+        weight: d.days <= 3 ? 91 : 78
+      });
+    }
+  }
+
+  // NEW(v3.2): a variable bill that came in off its average
+  for (const v of detectVariableBills(year, monthIdx).slice(0, 1)){
+    const up = v.diff > 0;
+    all.push({
+      kind: 'variable-bill',
+      _key: `var:${v.bill.id}:${year}-${monthIdx}:${Math.round(v.actual)}`,
+      _act: ['bills'],
+      title: `${esc(v.bill.name)} came in ${fmt(v.actual)} — ${fmt(Math.abs(v.diff))} ${up ? 'above' : 'below'} its average`,
+      detail: `Your last bills averaged ${fmt(v.avg)}.`,
+      tone: up ? 'warn' : 'good',
+      weight: 88
+    });
+  }
+
+  // NEW(v3.2): the last 7 days against a typical week
+  const wk = detectWeek(year, monthIdx);
+  if (wk){
+    const up = wk.diff > 0;
+    all.push({
+      kind: 'week',
+      _key: `week:${wk.end}`,
+      _act: ['activity'],
+      title: up ? `${fmtShort(wk.week)} spent in the last 7 days — ${wk.ratio.toFixed(1)}× a typical week` : `Quiet week: ${fmtShort(wk.week)} in 7 days vs ${fmtShort(wk.typical)} typical`,
+      detail: up ? `${fmtShort(wk.diff)} above your usual ${fmtShort(wk.typical)}.` : `${fmtShort(-wk.diff)} under your usual week.`,
+      tone: up ? 'warn' : 'good',
+      weight: up ? 80 : 56
     });
   }
 
@@ -489,7 +573,9 @@ export function detectInsights(year, monthIdx, max=3){
   // budget-breach makes the same category's outlier-high redundant — the
   // breach is the more specific, more actionable version of the same fact.
   const breachedCats = new Set(all.filter(i => i.kind === 'budget-breach').map(i => i._category));
+  const dismissed = state.flags.insightDismissed || {};
   const filtered = all.filter(i => {
+    if (i._key && dismissed[i._key]) return false;     // NEW(v3.2): × — stays gone until the subject changes
     // FIX(v3.0): compare categories directly (a substring match on the
     // title also suppressed "Gas" whenever "Gas Station" changed price).
     if (i.kind === 'outlier-high' && (priceChangedCats.has(i._category) || breachedCats.has(i._category))) return false;
@@ -514,17 +600,18 @@ export function renderInsightsCard(year, monthIdx){
   const insights = detectInsights(year, monthIdx, 3);
   if (insights.length === 0) return '';
   const toneDot = { good:'var(--green)', warn:'var(--amber)', neutral:'var(--text-3)' };
+  const xBtn = (attrs) => `<button class="ins-dismiss" type="button" ${attrs} aria-label="Dismiss" style="background:none;border:none;color:var(--text-3);font-size:17px;line-height:1;padding:2px 6px;cursor:pointer;flex-shrink:0;align-self:flex-start;">×</button>`;
   return `
     <div class="card insights-card" style="margin-top:14px;">
-      <h3 class="card-title">Insights <span class="pill">${monthName(monthIdx, true)}</span></h3>
+      <h3 class="card-title">Worth a look <span class="pill">${monthName(monthIdx, true)}</span></h3>
       ${insights.map(i => `
-        <div class="insight-row">
+        <div class="insight-row${i._act ? ' is-act' : ''}"${i._act ? ` data-iact="${esc(i._act[0])}" data-iarg="${esc(i._act[1] ?? '')}"` : ''}>
           <span class="insight-dot" style="background:${toneDot[i.tone]};"></span>
           <div class="insight-body">
             <div class="insight-title">${i.title}</div>
             <div class="insight-detail">${i.detail}</div>
           </div>
-          ${i._dismissKey ? `<button class="ins-dismiss" type="button" data-key="${esc(i._dismissKey)}" aria-label="Dismiss" style="background:none;border:none;color:var(--text-3);font-size:17px;line-height:1;padding:2px 6px;cursor:pointer;flex-shrink:0;align-self:flex-start;">×</button>` : ''}
+          ${i._dismissKey ? xBtn(`data-key="${esc(i._dismissKey)}"`) : i._key ? xBtn(`data-ikey="${esc(i._key)}"`) : ''}
         </div>
       `).join('')}
     </div>

@@ -6,12 +6,12 @@
    insights (new in v1.1.0).
    ============================================================ */
 
-import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, alphaSort, sumMoney, toCents, fromCents, esc } from './util.js';
+import { $, $$, fmt, fmtShort, monthKey, monthName, clamp, toast, alphaSort, sumMoney, toCents, fromCents, esc, today } from './util.js';
 import { state, dbPut, saveFlags } from './db.js';
 import { balanceAt, monthTotals } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { navigate, renderAll } from './app.js';
-import { txnHTML, openTxnSheet, filterActivityByAccount } from './txns.js';
+import { txnHTML, openTxnSheet, filterActivityByAccount, filterActivityBySearch } from './txns.js';
 import { billRowHTML, payBill, openBillSheet, getBillDueDay, computeRealAvailable, wireBillRows } from './bills.js';
 import { renderInsightsCard } from './insights.js';
 import { resetAddForm, logAgain } from './add.js'; // NEW(v2.4)
@@ -22,6 +22,10 @@ import { preferredAccountFor } from './merchants.js'; // NEW(v3.0)
 import { renderSafeCard, wireSafeCard } from './payday.js'; // NEW(v3.1)
 import { renderRecurringCard, wireRecurringCard } from './recurring.js'; // NEW(v3.1)
 import { statementInfo } from './statement.js';                          // NEW(v3.1)
+import { renderNextMonthCard, wireNextMonthCard, renderPayRunCard, wirePayRunCard } from './nextmonth.js'; // NEW(v3.2)
+import { renderCardsCard, wireCardsCard, openCardSheet } from './cards.js';                           // NEW(v3.2)
+import { openNextMonthSheet } from './nextmonth.js';                                                   // NEW(v3.2)
+import { openSubscriptionsSheet } from './subscriptions.js';                                           // NEW(v3.2)
 
 /* NEW(v3.0): how an account's balance reads on Home. The old row stripped
    every minus sign — an overdrawn checking account (−$50) showed as $50, and
@@ -44,9 +48,9 @@ export function acctBalanceHTML(a, bal){
    you only glance at keeps what matters above the fold. Stored in
    flags.homeLayout = { order, hidden, collapsed }. */
 export const HOME_CARDS = [
-  ['recurring', 'Usually charged now'],
+  ['recurring', 'Usually charged now'], ['payrun', 'Pay run'],
   ['quicklog', 'Quick log'], ['pace', 'Month-End Pace'], ['safe', 'Safe to spend'], ['real', 'Real available'],
-  ['insights', 'Insights'], ['recent', 'Recent'], ['bills', 'Upcoming Bills'],
+  ['nextmonth', 'Next month'], ['cards', 'Card statements'], ['insights', 'Worth a look'], ['recent', 'Recent'], ['bills', 'Upcoming Bills'],
   ['debt', 'Debt Total'], ['accounts', 'Accounts'], ['budgets', 'Budgets'], ['goals', 'Savings Goals']
 ];
 const DEFAULT_ORDER = HOME_CARDS.map(([k]) => k);
@@ -193,6 +197,9 @@ export function renderHome(){
     pace: renderPaceCard(),
     safe: isCurrentMonth ? renderSafeCard() : '',   // NEW(v3.1): a right-now number
     recurring: isCurrentMonth ? renderRecurringCard() : '',   // NEW(v3.1): only when something's due
+    payrun: isCurrentMonth ? renderPayRunCard() : '',         // NEW(v3.2): on pay-run day
+    nextmonth: isCurrentMonth ? renderNextMonthCard() : '',   // NEW(v3.2)
+    cards: isCurrentMonth ? renderCardsCard() : '',           // NEW(v3.2)
     real: `
     <div class="real-card">
       <div class="real-head">
@@ -340,17 +347,41 @@ export function renderHome(){
 
   // NEW(v2.9.2): dismiss a duplicate-suspect insight (false positives used
   // to pin the top insight slot for the whole month with no way out).
-  $$('.ins-dismiss', v).forEach(b => b.addEventListener('click', async () => {
-    const list = state.flags.dismissedDups || [];
-    if (!list.includes(b.dataset.key)) list.push(b.dataset.key);
-    state.flags.dismissedDups = list.slice(-50);
+  $$('.ins-dismiss', v).forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (b.dataset.ikey){
+      // NEW(v3.2): any insight can be dismissed — it stays gone until its subject changes.
+      const all = { ...(state.flags.insightDismissed || {}), [b.dataset.ikey]: today() };
+      const keys = Object.keys(all);
+      for (const k of keys.slice(0, Math.max(0, keys.length - 120))) delete all[k];
+      state.flags.insightDismissed = all;
+    } else {
+      const list = state.flags.dismissedDups || [];
+      if (!list.includes(b.dataset.key)) list.push(b.dataset.key);
+      state.flags.dismissedDups = list.slice(-50);
+    }
     await saveFlags();
     renderHome();
+  }));
+  // NEW(v3.2): an insight opens what it is about.
+  $$('.insight-row[data-iact]', v).forEach(row => row.addEventListener('click', () => {
+    const arg = row.dataset.iarg;
+    switch (row.dataset.iact){
+      case 'card': openCardSheet(arg); break;
+      case 'budgets': openBudgetsSheet(); break;
+      case 'subs': openSubscriptionsSheet(); break;
+      case 'nextmonth': openNextMonthSheet(); break;
+      case 'bills': navigate('bills'); break;
+      case 'txn': openTxnSheet(arg); break;
+      case 'category': filterActivityBySearch(arg); navigate('txns'); break;
+      case 'activity': navigate('txns'); break;
+    }
   }));
 
   $('#go-bills', v)?.addEventListener('click', () => navigate('bills'));
   $('#ra-config', v)?.addEventListener('click', openRealAvailSheet); // NEW(v2.7)
   wireSafeCard(v, renderHome);                                         // NEW(v3.1)
+  wireNextMonthCard(v); wirePayRunCard(v); wireCardsCard(v);                // NEW(v3.2)
   wireRecurringCard(v, { rerender: renderAll, logAgain });             // NEW(v3.1)
   $$('[data-go-budgets]', v).forEach(r => r.addEventListener('click', openBudgetsSheet)); // NEW(v2.7.1)
   $('#see-all-bills', v)?.addEventListener('click', () => navigate('bills'));

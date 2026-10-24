@@ -12,17 +12,26 @@
                    events the Cashflow Forecast projects)
                  − the cards you subtract in Real available
    … divided by the days left until payday (today included).
+
+   v3.2: a paycheck logged AHEAD of payday (HR approved payroll early, so you
+   entered it on the 25th on the 24th) is already in checking — it isn't the
+   "next payday" any more. Any logged paycheck within 3 days of a candidate
+   payday means that payday has happened, and the window runs to the one
+   after. A twice-a-month pay (the 10th and 25th) is recognised as such and
+   follows the calendar instead of a fixed 15-day step.
    ============================================================ */
 
 import { $, $$, fmt, esc, today, parseLocalDate, toLocalISO, addDays, daysBetween, sumMoney, round2, toast } from './util.js';
 import { state, saveFlags } from './db.js';
 import { balanceLatest } from './effects.js';
 import { buildEvents } from './forecast.js';
+import { semiMonthlySlots } from './subscriptions.js';
 import { openSheet, closeSheet } from './sheet.js';
 
 const PAY_RE = /salary|pay\s?check|payroll|wage|direct\s?dep/i;
 const EVERY = { week: 7, '2weeks': 14, month: 'month' };
 const EVERY_LABEL = { week: 'every week', '2weeks': 'every 2 weeks', month: 'monthly' };
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
 const SHORT = { weekday: 'short', month: 'short', day: 'numeric' };
 const dayLabel = (d) => d.toLocaleDateString('en-US', SHORT);
 
@@ -73,6 +82,9 @@ export function detectPaySchedule(todayIso = today()){
     else if (g >= 12 && g <= 17) step = Math.round(g);
     else if (g >= 26 && g <= 35) step = 'month';
     if (!step) continue;
+    // NEW(v3.2): the same two days every month → follow the calendar.
+    const slots = typeof step === 'number' && step >= 12 ? semiMonthlySlots(days.map(parseLocalDate)) : null;
+    if (slots) return { category, step: 'semi', slots, last: days[days.length - 1], approx: true };
     return { category, step, last: days[days.length - 1], approx: true };
   }
   return null;
@@ -89,15 +101,30 @@ export function nextPayday(todayIso = today()){
   const auto = detectPaySchedule(todayIso);
   return auto ? rollForward(auto, todayIso) : null;
 }
+// Candidate paydays for a twice-a-month schedule, ascending, around `t`.
+function semiDates(slots, t){
+  const out = [];
+  for (let k = -1; k < 5; k++){
+    const last = new Date(t.getFullYear(), t.getMonth() + k + 1, 0).getDate();
+    for (const day of slots) out.push(new Date(t.getFullYear(), t.getMonth() + k, Math.min(day, last)));
+  }
+  return out.sort((a, b) => a - b);
+}
 function rollForward(sched, todayIso){
   const t = parseLocalDate(todayIso), a = parseLocalDate(sched.last);
+  // Paychecks already in the books (future-dated ones included) of this schedule's category.
+  const cat = sched.category || detectPaySchedule(todayIso)?.category;
+  const logged = cat ? paydayClusters(cat, toLocalISO(addDays(t, -45))) : [];
+  const isLogged = (d) => logged.some(l => Math.abs(daysBetween(l, toLocalISO(d))) <= 3);
+  const dates = sched.step === 'semi' ? semiDates(sched.slots, t) : null;
   let expectedToday = false;
-  for (let k = 0; k < 800; k++){
-    const d = nthPayday(a, sched.step, k);
-    if (d > t) return { ...sched, date: d, expectedToday };   // a future manual anchor is k = 0
-    // Today is a payday that isn't in the data yet (an auto schedule's own
-    // last payday is, by definition, already logged).
-    if (+d === +t && (k > 0 || sched.manual)) expectedToday = true;
+  for (let k = 0; k < (dates ? dates.length : 800); k++){
+    const d = dates ? dates[k] : nthPayday(a, sched.step, k);
+    if (d < t || isLogged(d)) continue;          // gone by, or already deposited (maybe early)
+    // Today is a payday that isn't in the data yet — the money isn't in
+    // checking, so the conservative count runs to the one after.
+    if (+d === +t){ expectedToday = true; continue; }
+    return { ...sched, date: d, expectedToday };   // a future manual anchor is k = 0
   }
   return null;
 }
@@ -174,7 +201,7 @@ export function openPaydaySheet(onChange){
       </div>
       ${mode === 'auto' ? `
         <div class="muted small" style="margin:12px 0;line-height:1.55;">
-          ${auto ? `From your <b>${esc(auto.category)}</b> deposits: ${auto.step === 'month' ? 'monthly' : `every ~${auto.step} days`}, last on ${esc(dayLabel(parseLocalDate(auto.last)))}.`
+          ${auto ? `From your <b>${esc(auto.category)}</b> deposits: ${auto.step === 'month' ? 'monthly' : auto.step === 'semi' ? `twice a month (~the ${ordinal(auto.slots[0])} and ${ordinal(auto.slots[1])})` : `every ~${auto.step} days`}, last on ${esc(dayLabel(parseLocalDate(auto.last)))}.`
                    + (autoNext ? `<br>Next payday ≈ <b>${esc(dayLabel(autoNext.date))}</b>.` : '')
                  : "Couldn't find a regular paycheck in the last 5 months — set it yourself."}
         </div>` : `

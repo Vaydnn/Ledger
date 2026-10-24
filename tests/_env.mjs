@@ -63,6 +63,19 @@ export async function bootEnv(opts = {}){
   return dom;
 }
 
+
+// v3.2: pin "now" (noon local on y-m-d) so date-dependent suites are repeatable.
+// Call BEFORE bootEnv()/importing the app. Calendar math (new Date(y, m, d)) is untouched.
+export function freezeDate(y, m, d, h = 12){
+  const Real = Date.__real || Date;
+  const NOW = new Real(y, m - 1, d, h, 0, 0).getTime();
+  globalThis.Date = class extends Real {
+    constructor(...a){ if (a.length) super(...a); else super(NOW); }
+    static now(){ return NOW; }
+  };
+  globalThis.Date.__real = Real;
+}
+
 export function makeChecker(){
   let pass = 0, fail = 0;
   const check = (name, cond, extra='') => { cond ? pass++ : (fail++, console.log('FAIL:', name, extra)); };

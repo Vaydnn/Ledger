@@ -23,6 +23,19 @@
      the same date AND the same cents, which almost never happened, so e.g.
      rent was subtracted twice every month.
    Unpaid one-time bills already past due land as today's event.
+
+   v3.2:
+   - Paychecks are found even after a job change (subscriptions.js looks at
+     the recent regime) and a twice-a-month pay follows its days of the month.
+     A paycheck already logged (entered ahead of payday) isn't projected again.
+   - Cards you pay in full (Real available's ⚙) are paid the way you pay them:
+     one payment on pay-run day for the balance you carry plus the charges
+     that land before it. Their individual charges stay in the list, tagged,
+     but aren't cash movements.
+   - A recurring charge a bill already covers (same card, same price, same
+     time of month) is skipped — an ISP charge was counted next to the Internet bill.
+   - An unpaid monthly bill past its due day lands today (like Real available).
+   - Variable bills use their estimate / entered amount per month.
    ============================================================ */
 
 import { $, fmt, fmtShort, monthName, parseLocalDate, toLocalISO, addDays, sumMoney, esc, squash, round2 } from './util.js';
@@ -30,7 +43,8 @@ import { state } from './db.js';
 import { balanceLatest, acctTypeMap } from './effects.js';
 import { openSheet } from './sheet.js';
 import { detectRecurring } from './subscriptions.js';
-import { getBillAmount, isBillPaid } from './bills.js';
+import { cardPayMode, cardCycle, statementInfo, lastClose } from './statement.js';
+import { getBillAmount, isBillPaid, billMonthAmount, isVariableBill, isBillEstimated, seriesCoveredByBill } from './bills.js';
 
 // Project the next due date for an auto-cc bill, given today.
 // We assume close+grace ≈ a real-world due date once a month. Find
@@ -52,7 +66,9 @@ function projectAutoCcDueDate(closeDay, graceDays, todayD, endD){
 }
 
 // Total cash right now = sum of Checking + Savings balances
-function currentCash(){
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
+
+export function currentCash(){
   return sumMoney(
     state.accounts.filter(a => a.active && (a.type === 'Checking' || a.type === 'Savings')),
     a => balanceLatest(a.name));
@@ -90,50 +106,105 @@ function projectBillDates(dueDay, fromD, toD){
   return out;
 }
 
+// NEW(v3.2): the day you pay your cards (and bills) in one go — the 1st by
+// default. flags.bulkPay = { day }.
+export function bulkPayDay(){
+  const d = Number(state.flags.bulkPay && state.flags.bulkPay.day);
+  return d >= 1 && d <= 28 ? Math.floor(d) : 1;
+}
+// Pay-run dates after `fromD` (exclusive) through `toD`, one per month.
+export function runDatesBetween(fromD, toD){
+  const day = bulkPayDay();
+  const out = [];
+  let y = fromD.getFullYear(), m = fromD.getMonth();
+  for (let i = 0; i < 40; i++){
+    const d = new Date(y, m, day);
+    if (d > toD) break;
+    if (d > fromD) out.push(d);
+    m += 1; if (m > 11){ m = 0; y += 1; }
+  }
+  return out;
+}
+// The cards you pay in full (the ones checked in Real available's ⚙).
+export function payInFullCards(){
+  return (state.flags.realAvailCards || []).filter(n => state.accounts.find(a => a.name === n && a.active));
+}
+
+// Dates of a twice-a-month pay inside [fromD, toD].
+function projectSlots(slots, fromD, toD){
+  const out = [];
+  let y = fromD.getFullYear(), m = fromD.getMonth();
+  for (let i = 0; i < 40; i++){
+    const last = new Date(y, m + 1, 0).getDate();
+    for (const day of slots){
+      const d = new Date(y, m, Math.min(day, last));
+      if (d >= fromD && d <= toD) out.push(d);
+    }
+    m += 1; if (m > 11){ m = 0; y += 1; }
+    if (new Date(y, m, 1) > toD) break;
+  }
+  return out.sort((a, b) => a - b);
+}
+
 // Build the ordered event list for the forecast window
 // v3.1: exported for Home's Safe to spend (payday.js). Each event carries
 // the account it hits (acct) so card double counts can be filtered.
+// v3.2: cards you pay in full (Real available's ⚙) are modeled the way you
+// pay them — their charges are tagged `cardCharge` (they reach cash through
+// the payment, not on the charge date) and each pay-run day gets one 'card'
+// event: the balance you carry now plus the charges that land before it.
 export function buildEvents(days){
   const todayD = new Date();
   todayD.setHours(0, 0, 0, 0);
   const endD = addDays(todayD, days); // FIX(v1.2): DST-safe
+  const ymNow = toLocalISO(todayD).slice(0, 7);
 
   const events = [];
 
   const aType = acctTypeMap();
   const isCashAcct = (n) => aType[n] === 'Checking' || aType[n] === 'Savings';
   const active = state.bills.filter(b => b.active !== false);
+  const full = payInFullCards();
   // Cards/loans whose payments are modeled by a bill: their charges reach
   // cash through that payment, never directly.
   const paidViaBill = new Set([
     ...active.filter(b => b.recurrence === 'auto-cc').map(b => b.linkedAccount),
     ...active.filter(b => b.recurrence !== 'auto-cc' && (b.type === 'CC Payment' || b.type === 'Loan Payment')).map(b => b.account)
-  ]);
-  const expenseBills = active.filter(b => b.recurrence !== 'auto-cc' && (b.type || 'Expense') === 'Expense');
-  const coveredByBill = (r) => expenseBills.some(b =>
-    (b.category && b.category === r.category) || (squash(b.name).length >= 3 && squash(r.label).includes(squash(b.name))));
+  ].filter(n => !full.includes(n)));     // …unless the card is paid in full on pay-run day
+
+  // Logged paychecks (any date from a week ago on) per income category — a
+  // paycheck you entered ahead of payday has already happened.
+  const loggedIncome = {};
+  const weekAgo = toLocalISO(addDays(todayD, -7));
+  for (const t of state.transactions){
+    if (t.type !== 'Income' || !t.date || t.date < weekAgo) continue;
+    (loggedIncome[t.category] = loggedIncome[t.category] || []).push(t.date);
+  }
+  const alreadyLogged = (cat, d) => (loggedIncome[cat] || []).some(l => Math.abs(Math.round((parseLocalDate(l) - d) / 86400000)) <= 3);
 
   // Recurring Income (paychecks, Prolific, etc.)
   const incRecurring = detectRecurring('Income');
   for (const r of incRecurring){
-    const occs = projectOccurrences(r.last, r.canonDays, todayD, endD);
+    const occs = r.slots ? projectSlots(r.slots, todayD, endD) : projectOccurrences(r.last, r.canonDays, todayD, endD);
     for (const d of occs){
+      if (d <= r.last || alreadyLogged(r.category, d)) continue;     // NEW(v3.2): don't count a paycheck twice
       events.push({
         date:d, kind:'income', label:r.label, amount:r.medAmt,
-        detail:`${r.cadence} · ${r.category}`
+        detail:`${r.slots ? 'Twice a month' : r.cadence} · ${r.category}`
       });
     }
   }
 
   // Recurring Expenses (subscriptions)
-  const expRecurring = detectRecurring('Expense');
-  for (const r of expRecurring){
-    if (coveredByBill(r)) continue;
+  for (const r of detectRecurring('Expense')){
+    if (seriesCoveredByBill(r)) continue;
     if (paidViaBill.has(r.primaryAccount)) continue;
+    const onCard = full.includes(r.primaryAccount);
     const occs = projectOccurrences(r.last, r.canonDays, todayD, endD);
     for (const d of occs){
       events.push({
         date:d, kind:'subscription', label:r.label, amount:-r.medAmt, acct:r.primaryAccount,
+        cardCharge: onCard ? r.primaryAccount : undefined,
         detail:`${r.cadence} · ${r.category}${r.primaryAccount && !isCashAcct(r.primaryAccount) ? ' · ' + r.primaryAccount : ''}`
       });
     }
@@ -145,6 +216,7 @@ export function buildEvents(days){
   // the current live balance (we can't predict future charges).
   for (const b of active){
     if (b.recurrence === 'auto-cc'){
+      if (full.includes(b.linkedAccount)) continue;          // NEW(v3.2): the pay-run event covers it
       const liveAmt = getBillAmount(b);
       if (liveAmt <= 0) continue;
       const due = projectAutoCcDueDate(b.closeDay || 1, b.graceDays != null ? b.graceDays : 21, todayD, endD);
@@ -157,11 +229,16 @@ export function buildEvents(days){
       });
       continue;
     }
-    if (!b.amount) continue;
+    if (!b.amount && !isVariableBill(b)) continue;
+    const type = b.type || 'Expense';
     // An expense bill charged to a card whose payment is itself a bill
     // reaches cash through that payment.
-    if ((b.type || 'Expense') === 'Expense' && paidViaBill.has(b.account)) continue;
+    if (type === 'Expense' && paidViaBill.has(b.account)) continue;
+    // …and a card you pay in full: the payment covers it, not a bill-sized hole in cash.
+    if ((type === 'CC Payment') && full.includes(b.account)) continue;
+    const cardCharge = type === 'Expense' && full.includes(b.account) ? b.account : undefined;
     let dates = [];
+    let overdue = false;
     if (b.recurrence === 'once'){
       if (!b.dueDate || isBillPaid(b, b.dueDate.slice(0, 7))) continue;
       const d = parseLocalDate(b.dueDate);
@@ -170,15 +247,72 @@ export function buildEvents(days){
     } else {
       if (!b.dueDay) continue;
       dates = projectBillDates(b.dueDay, todayD, endD);
+      // NEW(v3.2): this month's bill is past due and unpaid → it's due now
+      // (Real available already counts it; the forecast used to skip it).
+      const dueThisMonth = new Date(todayD.getFullYear(), todayD.getMonth(), Math.min(b.dueDay, new Date(todayD.getFullYear(), todayD.getMonth() + 1, 0).getDate()));
+      if (dueThisMonth < todayD && !isBillPaid(b, ymNow)){ dates.unshift(new Date(todayD)); overdue = true; }
     }
-    for (const d of dates){
+    dates.forEach((d, i) => {
       // Skip bills already marked paid for the month they fall in
-      if (b.recurrence !== 'once' && isBillPaid(b, toLocalISO(d).slice(0, 7))) continue;
+      const ymd = toLocalISO(d).slice(0, 7);
+      if (b.recurrence !== 'once' && isBillPaid(b, ymd)) return;
+      const amt = b.recurrence === 'once' ? (b.amount || 0) : billMonthAmount(b, ymd);
+      if (!amt) return;
+      const late = b.recurrence === 'once' ? parseLocalDate(b.dueDate) < todayD : (overdue && i === 0);
+      const est = b.recurrence !== 'once' && isBillEstimated(b, ymd);
       events.push({
-        date:d, kind:'bill', label:b.name, amount:-b.amount, acct:b.account, billId:b.id,
-        detail: b.recurrence === 'once' ? (parseLocalDate(b.dueDate) < todayD ? 'One-time bill · overdue' : 'One-time bill') : `Bill · due ${b.dueDay}`
+        date:d, kind:'bill', label:b.name, amount:-amt, acct:b.account, billId:b.id, cardCharge, est,
+        detail: (b.recurrence === 'once' ? (late ? 'One-time bill · overdue' : 'One-time bill') : (late ? `Bill · overdue (due ${b.dueDay})` : `Bill · due ${b.dueDay}`))
+                + (est ? ' · estimate' : '') + (cardCharge ? ` · on ${cardCharge}` : '')
       });
-    }
+    });
+  }
+
+  // NEW(v3.2): cards you pay on pay-run day — one payment per run. A card on
+  // "statement" mode pays the statement that has closed (or will close before
+  // that run); whatever is charged after the closing day rides on the next
+  // statement. A card on "full" pays everything owed by then.
+  const runs = full.length ? runDatesBetween(todayD, endD) : [];
+  const dayLbl = (d) => `${monthName(d.getMonth() + 1, true)} ${d.getDate()}`;
+  for (const card of full){
+    const ch = events.filter(e => e.cardCharge === card).sort((x, y) => x.date - y.date);
+    let idx = 0;
+    const take = (limit, inclusive) => {
+      let sum = 0;
+      while (idx < ch.length && (inclusive ? ch[idx].date <= limit : ch[idx].date < limit)){ sum -= ch[idx].amount; idx++; }
+      return sum;
+    };
+    const mode = cardPayMode(card);
+    const cyc = mode === 'statement' ? cardCycle(card) : null;
+    const info = cyc ? statementInfo(card, toLocalISO(todayD)) : null;
+    let bal = Math.max(0, balanceLatest(card));          // owed now, grows with the charges ahead
+    runs.forEach((run, i) => {
+      let pay, carry = 0, charges = 0, detail;
+      if (!cyc){
+        carry = bal; charges = take(run, false); pay = carry + charges; bal = 0;
+        detail = i === 0 && carry > 0.004
+          ? `Balance ${fmt(carry)}${charges > 0.004 ? ` + ${fmt(charges)} expected charges` : ''}`
+          : 'Charges since the last pay run';
+      } else {
+        const c = lastClose(cyc.closeDay, toLocalISO(run));
+        if (c <= todayD){                                  // already closed → what's still due
+          pay = i === 0 && info ? info.remaining : 0; carry = pay;
+          bal = Math.max(0, bal + take(run, false) - pay);
+          detail = `Statement closed ${dayLbl(c)}${info && info.entered ? ' (entered)' : ''}${bal > 0.004 ? ` · ${fmt(bal)} left for the next one` : ''}`;
+        } else {                                           // closes before the run
+          carry = bal; charges = take(c, true); pay = carry + charges;
+          bal = take(run, false);
+          detail = `Statement closes ${dayLbl(c)}: ${fmt(carry)} carried + ${fmt(charges)} expected charges`;
+        }
+      }
+      pay = round2(pay);
+      if (pay > 0.004){
+        events.push({
+          date: run, kind: 'card', label: `${card} · ${cyc ? 'statement balance' : 'pay in full'}`, amount: -pay, acct: card, cardPay: true,
+          card, mode: cyc ? 'statement' : 'full', balance: round2(carry), charges: round2(charges), detail
+        });
+      }
+    });
   }
 
   events.sort((a, b) => a.date - b.date);
@@ -186,13 +320,15 @@ export function buildEvents(days){
 }
 
 // Produce a daily cash-balance series for the chart
-function buildSeries(events, startCash, days){
+export function buildSeries(events, startCash, days){
   const todayD = new Date();
   todayD.setHours(0, 0, 0, 0);
 
-  // Aggregate events by day (ISO)
+  // Aggregate events by day (ISO) — a charge on a pay-in-full card isn't a
+  // cash movement; the card's payment event is.
   const dayDeltas = {};
   for (const e of events){
+    if (e.cardCharge) continue;
     const iso = toLocalISO(e.date);
     dayDeltas[iso] = round2((dayDeltas[iso] || 0) + e.amount);
   }
@@ -268,7 +404,7 @@ export function openForecastSheet(){
   $('#sheetBody').innerHTML = `
     <h2>Cashflow Forecast</h2>
     <div class="muted small" style="margin-bottom:14px;">
-      Next ${days} days, projected from today's cash (${fmt(startCash)}) using detected recurring income, subscriptions, and your configured bills.
+      Next ${days} days, projected from today's cash (${fmt(startCash)}) using detected recurring income, subscriptions, and your configured bills. Cards you pay in full come out of cash on pay-run day (the ${ordinal(bulkPayDay())}), not when charged.
     </div>
 
     <div class="sub-totals">
@@ -308,7 +444,7 @@ export function openForecastSheet(){
         const dLbl = fmtDate(d);
         const away = daysFromNow(d);
         const awayLbl = away === 0 ? 'Today' : `in ${away}d`;
-        const dayTotal = byDate[iso].reduce((s, e) => s + e.amount, 0);
+        const dayTotal = byDate[iso].reduce((s, e) => s + (e.cardCharge ? 0 : e.amount), 0);
         return `
           <div class="fc-day">
             <div class="fc-day-head">
@@ -317,10 +453,10 @@ export function openForecastSheet(){
             </div>
             ${byDate[iso].map(e => {
               const isIn = e.amount > 0;
-              const iconMap = { income:'+', subscription:'↻', bill:'✓' };
-              const iconCls = { income:'inc', subscription:'pay', bill:'pay' };
+              const iconMap = { income:'+', subscription:'↻', bill:'✓', card:'$' };
+              const iconCls = { income:'inc', subscription:'pay', bill:'pay', card:'pay' };
               return `
-                <div class="fc-event">
+                <div class="fc-event" style="${e.cardCharge ? 'opacity:.6;' : ''}">
                   <div class="txn-icon ${iconCls[e.kind]}">${iconMap[e.kind]}</div>
                   <div class="fc-event-body">
                     <div class="fc-event-label">${esc(e.label)}</div>

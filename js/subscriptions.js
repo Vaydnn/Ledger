@@ -43,6 +43,35 @@ const mostCommon = (vals) => {
   return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 };
 
+/* NEW(v3.2): twice-a-month pay (the 10th and the 25th). A fixed 14/15-day
+   step drifts off a semi-monthly paycheck by a few days every month, so the
+   forecast and payday projection follow the days of the month instead.
+   `dates` are Date objects; returns [lowDay, highDay] or null unless the last
+   several months each show the same two paydays (±3 days, weekends shift). */
+export function semiMonthlySlots(dates){
+  const ds = [...dates].sort((a, b) => a - b).slice(-10);
+  const byMonth = new Map();
+  for (const d of ds){
+    const k = d.getFullYear() * 12 + d.getMonth();
+    if (!byMonth.has(k)) byMonth.set(k, []);
+    byMonth.get(k).push(d.getDate());
+  }
+  const keys = [...byMonth.keys()].sort((a, b) => a - b);
+  // Every month but the (possibly partial) first and last holds exactly two.
+  if (keys.slice(1, -1).some(k => byMonth.get(k).length !== 2)) return null;
+  const pairs = keys.map(k => byMonth.get(k)).filter(a => a.length === 2).map(a => [...a].sort((x, y) => x - y));
+  if (pairs.length < 2) return null;
+  const lo = Math.round(med(pairs.map(p => p[0])));
+  const hi = Math.round(med(pairs.map(p => p[1])));
+  if (hi - lo < 10 || hi - lo > 20) return null;
+  if (pairs.some(p => Math.abs(p[0] - lo) > 3 || Math.abs(p[1] - hi) > 3)) return null;
+  // A fixed 14-day step also lands twice a month, but its days slide a couple
+  // of days every month — a real semi-monthly pay repeats the same days.
+  const same = (i, v) => pairs.filter(p => p[i] === v).length / pairs.length;
+  if (same(0, lo) < 0.6 || same(1, hi) < 0.6) return null;
+  return [lo, hi];
+}
+
 function classifyCadence(mg){
   if (mg >= 25 && mg <= 35) return { label:'Monthly', canon:30 };
   if (mg >= 12 && mg <= 17) return { label:'Bi-weekly', canon:14 };
@@ -100,9 +129,29 @@ function analyzeSeries(rows, todayD){
     count: rows.length, medAmt,
     cadence: cadence.label, canonDays: cadence.canon,
     monthlyEquiv, last, next, ytdSpend, priceChange,
+    slots: cadence.canon === 14 ? semiMonthlySlots(dates) : null,    // NEW(v3.2)
     primaryAccount: mostCommon(rows.map(r => r.account)),
     txnIds: new Set(rows.map(r => r.id))
   };
+}
+
+/* NEW(v3.2): a recent regime. A new job — a different pay, a different
+   rhythm — buries the new paychecks under a year of the old ones, so the
+   whole series looks irregular and nothing is detected. Income only: try the
+   newest 8 / 6 / 4 deposits, which must agree tightly on the amount and
+   include something from the last 45 days. */
+function recentRegime(rows, todayD){
+  const sorted = [...rows].sort((a, b) => a.date - b.date);
+  if (Math.round((todayD - sorted[sorted.length - 1].date) / 86400000) > 45) return null;
+  for (const n of [8, 6, 4]){
+    if (sorted.length <= n) continue;
+    const win = sorted.slice(-n);
+    const m = med(win.map(r => r.amount));
+    if (win.filter(r => Math.abs(r.amount - m) <= Math.max(1, m * 0.1)).length / win.length < 0.8) continue;
+    const s = analyzeSeries(win, todayD);
+    if (s) return s;
+  }
+  return null;
 }
 
 /**
@@ -144,7 +193,7 @@ export function detectRecurring(type='Expense', cutoffDays=400){
   for (const [key, rows] of Object.entries(byMerchant)){
     if (rows.length < 2) continue;
     if (rows.length === 2 && Math.round(rows[0].amount * 100) !== Math.round(rows[1].amount * 100)) continue;
-    const s = analyzeSeries(rows, todayD);
+    const s = analyzeSeries(rows, todayD) || (type === 'Income' ? recentRegime(rows, todayD) : null);
     if (!s) continue;
     rows.forEach(r => claimed.add(r.id));
     results.push({
@@ -162,7 +211,7 @@ export function detectRecurring(type='Expense', cutoffDays=400){
     (byCat[it.category] || (byCat[it.category] = [])).push(it);
   }
   for (const [cat, rows] of Object.entries(byCat)){
-    const s = analyzeSeries(rows, todayD);
+    const s = analyzeSeries(rows, todayD) || (type === 'Income' ? recentRegime(rows, todayD) : null);
     if (!s) continue;
     results.push({ key: 'c:' + cat, type, label: cat, category: cat, ...s });
   }

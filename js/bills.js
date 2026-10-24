@@ -12,16 +12,27 @@
      as the payment — one tap links it instead of the bill sitting unpaid and
      being subtracted from Real Available a second time.
    - Pay / Unpay / Save are double-tap safe.
+   v3.2:
+   - VARIABLE bills (a phone bill): monthly, but the amount changes. The bill
+     carries an estimate (3-month average of what it actually was, last
+     month's, or a fixed number); each month's actual is entered when it
+     arrives, or picked up from the payment you log. bill.amounts maps
+     'YYYY-MM' → actual; bill.amount tracks the current estimate so older
+     builds and the reminder worker still read something sensible.
+   - Link any transaction to a bill by hand (a payment that is a different
+     amount, or from a different checking account, than the bill says).
+   - Payment matching no longer requires the same From account.
    ============================================================ */
 
 import { $, $$, fmt, fmtShort, monthName, today, uid, clamp, toast, toastAction, sumMoney, round2, parseAmount, toCents, fromCents, haptic, esc, squash, ymOf, currentYm, daysBetween, busyGuard } from './util.js';
-import { state, dbPut, dbDel } from './db.js';
+import { state, dbPut, dbDel, dataVersion } from './db.js';
 import { balanceAt, balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { renderCurrent } from './app.js';
 import { trashTxn, restoreTxn } from './trash.js';
 import { isWide } from './layout.js';   // NEW(v3.1)
 import { statementInfo } from './statement.js';   // NEW(v3.1)
+import { openNextMonthSheet, openPayRunSheet } from './nextmonth.js';   // NEW(v3.2)
 
 /* ── Paid state ─────────────────────────────────────────────────────── */
 // paidMonths maps 'YYYY-MM' → id of the payment transaction. A monthly bill
@@ -62,11 +73,71 @@ export function billAppliesToMonth(bill, year, month){
   return true;
 }
 
+/* ── NEW(v3.2): variable-amount bills ─────────────────────────────────── */
+export const isVariableBill = (b) => !!b && b.variable === true && (b.recurrence || 'monthly') === 'monthly';
+
+// id → transaction, rebuilt when the data changes (history reads this a lot).
+let _txnMap = null, _txnStamp = '';
+function txnById(id){
+  const stamp = `${dataVersion.n}|${state.transactions.length}`;
+  if (!_txnMap || stamp !== _txnStamp){
+    _txnMap = new Map(state.transactions.map(t => [t.id, t]));
+    _txnStamp = stamp;
+  }
+  return _txnMap.get(id) || null;
+}
+
+// What a variable bill actually came to in a month: the amount entered, else
+// the payment transaction it's linked to, else null (not known yet).
+export function billActual(bill, ym){
+  const v = (bill.amounts || {})[ym];
+  if (v != null && isFinite(Number(v))) return round2(v);
+  const id = (bill.paidMonths || {})[ym];
+  const t = id ? txnById(id) : null;
+  return t ? round2(t.amount) : null;
+}
+// [[ym, amount], …] oldest → newest — every month with a known actual.
+export function billHistory(bill){
+  const yms = new Set([...Object.keys(bill.amounts || {}), ...Object.keys(bill.paidMonths || {})]);
+  const out = [];
+  for (const ym of [...yms].sort()){
+    const a = billActual(bill, ym);
+    if (a != null && a > 0) out.push([ym, a]);
+  }
+  return out;
+}
+// The estimate for a month, from the actuals BEFORE it.
+export function billEstimate(bill, ym){
+  const mode = bill.estMode || 'avg3';
+  const hist = billHistory(bill).filter(([k]) => k < ym);
+  if (mode !== 'fixed' && hist.length){
+    if (mode === 'last') return hist[hist.length - 1][1];
+    const last3 = hist.slice(-3);
+    return round2(last3.reduce((s, [, a]) => s + a, 0) / last3.length);
+  }
+  return bill.amount || 0;
+}
+// A bill's amount for a month: fixed, or (variable) the actual once known,
+// the estimate until then.
+export function billMonthAmount(bill, ym){
+  if (!isVariableBill(bill)) return bill.amount || 0;
+  const a = billActual(bill, ym);
+  return a != null ? a : billEstimate(bill, ym);
+}
+export const isBillEstimated = (bill, ym) => isVariableBill(bill) && billActual(bill, ym) == null;
+
+// Record a month's actual and roll the stored estimate forward (a fixed
+// estimate stays what the user typed). Caller saves the bill.
+function setActual(bill, ym, amount){
+  bill.amounts = { ...(bill.amounts || {}), [ym]: round2(amount) };
+  if ((bill.estMode || 'avg3') !== 'fixed') bill.amount = billEstimate(bill, '9999-99') || bill.amount;
+}
+
 // Effective amount owed for a bill — live for auto-cc, stored otherwise.
 // FIX(v2.9.1): optional (year, month) context — past months read the card's
 // balance as of that month instead of today's.
 export function getBillAmount(bill, year, month){
-  if (bill.recurrence !== 'auto-cc') return bill.amount || 0;
+  if (bill.recurrence !== 'auto-cc') return billMonthAmount(bill, year == null ? currentYm() : ymOf(year, month));
   if (!bill.linkedAccount) return 0;
   const now = new Date();
   const isLive = year == null || (year === now.getFullYear() && month === now.getMonth() + 1);
@@ -101,7 +172,7 @@ export function computeRealAvailable(year, month){
   // same money as the card's balance — exclude it from the bills side.
   const autoCcCounted = autoCcAll.filter(b => !raCards.includes(b.linkedAccount));
   const upcomingTotal = round2(
-    sumMoney(stdUnpaid, b => b.amount || 0) +
+    sumMoney(stdUnpaid, b => getBillAmount(b, year, month)) +
     sumMoney(autoCcCounted, b => getBillAmount(b, year, month)));
 
   const cash = sumMoney(
@@ -149,15 +220,36 @@ export function billStatus(b, ym, isCurrentMonth, todayDay){
   return { kind:'future', label:`Due in ${days}d` };
 }
 
+/* NEW(v3.2): is a detected recurring charge already one of the bills? By
+   category or name (as before), or — what the old test missed — the same
+   card, the same price (±5%) and the same time of month (±4 days): an ISP charge
+   on 10/31 and 11/30 next to an Internet bill due the 2nd is ONE charge. */
+export function seriesCoveredByBill(r){
+  const dayGap = (a, b) => { const g = Math.abs(a - b); return Math.min(g, 30 - g); };
+  return state.bills.some(b => {
+    if (b.active === false || b.recurrence === 'auto-cc' || (b.type || 'Expense') !== 'Expense') return false;
+    if (b.category && b.category === r.category) return true;
+    if (squash(b.name).length >= 3 && squash(r.label).includes(squash(b.name))) return true;
+    if (b.recurrence === 'once' || isVariableBill(b) || !r.primaryAccount || b.account !== r.primaryAccount || !r.last) return false;
+    const amt = b.amount || 0;
+    return Math.abs(r.medAmt - amt) <= Math.max(1, amt * 0.05) && dayGap(r.last.getDate(), b.dueDay || 0) <= 4;
+  });
+}
+
 /* ── NEW(v3.0): matching hand-logged transactions to bills ───────────── */
 export function billMatchesTxn(b, t){
   if (!b || !t || b.active === false) return false;
   if (b.recurrence === 'auto-cc') return t.type === 'CC Payment' && t.account === b.linkedAccount;
   const type = b.type || 'Expense';
   if (t.type !== type || t.account !== b.account) return false;
-  if (b.fromAccount && t.fromAccount && t.fromAccount !== b.fromAccount) return false;
+  // FIX(v3.2): the From account isn't part of the match — a payment made from
+  // the other checking account is still that bill's payment.
   const amt = b.amount || 0;
-  if (Math.abs((t.amount || 0) - amt) > Math.max(1, amt * 0.1)) return false;
+  if (isVariableBill(b)){
+    // The amount is the thing that varies: only a wildly different one rules it out.
+    const est = billEstimate(b, (t.date || '').slice(0, 7)) || amt;
+    if (est > 0 && ((t.amount || 0) < est * 0.4 || (t.amount || 0) > est * 2.5)) return false;
+  } else if (Math.abs((t.amount || 0) - amt) > Math.max(1, amt * 0.1)) return false;
   // A plain expense on a busy card needs more than the amount to agree —
   // the bill's name or category must show up on the transaction.
   if (type === 'Expense'){
@@ -176,7 +268,7 @@ export function findMatchingBill(t){
   const [y, m] = ym.split('-').map(Number);
   const cands = state.bills.filter(b =>
     billAppliesToMonth(b, y, m) && !isBillPaid(b, ym) && billMatchesTxn(b, t));
-  cands.sort((a, b) => Math.abs((a.amount || 0) - t.amount) - Math.abs((b.amount || 0) - t.amount));
+  cands.sort((a, b) => Math.abs(billMonthAmount(a, ym) - t.amount) - Math.abs(billMonthAmount(b, ym) - t.amount));
   return cands[0] || null;
 }
 
@@ -185,13 +277,17 @@ export function findPaymentForBill(b, ym){
   const linked = new Set();
   for (const bb of state.bills) for (const id of Object.values(bb.paidMonths || {})) linked.add(id);
   const hits = state.transactions.filter(t => t.date && t.date.slice(0, 7) === ym && !linked.has(t.id) && billMatchesTxn(b, t));
-  hits.sort((a, c) => Math.abs(a.amount - (b.amount || 0)) - Math.abs(c.amount - (b.amount || 0)));
+  const want = billMonthAmount(b, ym);
+  hits.sort((a, c) => Math.abs(a.amount - want) - Math.abs(c.amount - want));
   return hits[0] || null;
 }
 
 export async function markBillPaidWith(bill, ym, txnId){
+  if (!txnId) return;
   bill.paidMonths = bill.paidMonths || {};
   bill.paidMonths[ym] = txnId;
+  const t = isVariableBill(bill) ? txnById(txnId) : null;
+  if (t) setActual(bill, ym, t.amount);     // NEW(v3.2): the payment IS the month's amount
   await dbPut('bills', bill);
   haptic(15);
   toast(`"${bill.name}" marked paid`);
@@ -208,8 +304,11 @@ export function billRowHTML(b, ym, isCurrentMonth, todayDay){
     : (b.fromAccount ? `${esc(b.fromAccount)} → ${esc(b.account)}` : esc(b.account));
   const dueDay = getBillDueDay(b);
   const liveAmount = getBillAmount(b, Number(ym.slice(0, 4)), Number(ym.slice(5, 7)));
+  const isVar = isVariableBill(b);
+  const est = isVar && !isPaid && isBillEstimated(b, ym);   // NEW(v3.2): amount not in yet
   const tag = isOnce ? ' <span class="bill-once-tag">Once</span>'
            : isAuto ? ' <span class="bill-auto-tag">Auto</span>'
+           : isVar ? ' <span class="bill-var-tag">Varies</span>'
            : '';
   // NEW(v3.0): an unpaid bill with a matching hand-logged transaction.
   const match = !isPaid ? findPaymentForBill(b, ym) : null;
@@ -223,6 +322,7 @@ export function billRowHTML(b, ym, isCurrentMonth, todayDay){
         <div class="bill-meta">
           <span class="bill-status ${st.kind}">${st.label || (isOnce ? `Due ${esc(b.dueDate)}` : `Day ${dueDay}`)}</span>
           <span class="bill-acct">· ${acctMeta}</span>
+          ${est ? `<button type="button" class="bill-enter" data-bill="${esc(b.id)}" data-ym="${ym}">Enter amount</button>` : ''}
         </div>
         ${match ? `
           <div class="bill-match">
@@ -230,7 +330,7 @@ export function billRowHTML(b, ym, isCurrentMonth, todayDay){
             <button type="button" class="bill-link" data-bill="${esc(b.id)}" data-txn="${esc(match.id)}" data-ym="${ym}">Link</button>
           </div>` : ''}
       </div>
-      <div class="bill-amt mono">${fmtShort(liveAmount)}</div>
+      <div class="bill-amt mono">${est ? '~' : ''}${fmtShort(liveAmount)}${est ? '<div class="bill-est">est.</div>' : ''}</div>
     </div>
   `;
 }
@@ -241,6 +341,10 @@ export function wireBillRows(root){
     e.stopPropagation();
     const bill = state.bills.find(b => b.id === btn.dataset.bill);
     if (bill) markBillPaidWith(bill, btn.dataset.ym, btn.dataset.txn);
+  }));
+  $$('.bill-enter', root).forEach(btn => btn.addEventListener('click', (e) => {   // NEW(v3.2)
+    e.stopPropagation();
+    openBillAmountSheet(btn.dataset.bill, btn.dataset.ym);
   }));
 }
 
@@ -259,8 +363,8 @@ export function renderBills(){
   const standardBills = bills.filter(b => b.recurrence !== 'auto-cc');
   const autoCcBills   = bills.filter(b => b.recurrence === 'auto-cc');
 
-  const stdTotal = sumMoney(standardBills, b => b.amount || 0);
-  const stdPaid  = sumMoney(standardBills.filter(b => isBillPaid(b, ym)), b => b.amount || 0);
+  const stdTotal = sumMoney(standardBills, b => getBillAmount(b, year, month));
+  const stdPaid  = sumMoney(standardBills.filter(b => isBillPaid(b, ym)), b => getBillAmount(b, year, month));
   const autoCcLive = sumMoney(autoCcBills, b => getBillAmount(b, year, month));
 
   const totalDue    = round2(stdTotal + autoCcLive);
@@ -306,7 +410,7 @@ export function renderBills(){
             <span class="bill-acct">· ${acctMeta}</span>
           </div>
         </div>
-        <div class="bill-amt mono">${b.recurrence === 'auto-cc' ? '—' : fmtShort(b.amount || 0)}</div>
+        <div class="bill-amt mono">${b.recurrence === 'auto-cc' ? '—' : fmtShort(getBillAmount(b))}</div>
       </div>
     `;
   };
@@ -341,6 +445,11 @@ export function renderBills(){
       <div class="bs-tile"><div class="l">Remaining</div><div class="v" style="color:var(--amber);">${fmt(unpaidTotal)}</div></div>
     </div>
 
+    <div class="bill-tools">
+      <button class="btn ghost" id="go-nextmonth" type="button">Next month →</button>
+      <button class="btn ghost" id="go-payrun" type="button">Pay run</button>
+    </div>
+
     ${bills.length === 0 && pausedBills.length === 0 ? `
       <div class="empty">
         <div class="big">No bills yet.</div>
@@ -373,6 +482,8 @@ export function renderBills(){
   wireBillRows(v);
   $$('.bill-row[data-bill-id]', v).forEach(el => el.addEventListener('click', () => openBillSheet(el.dataset.billId)));
   $('#add-bill', v).addEventListener('click', () => openBillSheet(null));
+  $('#go-nextmonth', v).addEventListener('click', () => openNextMonthSheet());   // NEW(v3.2)
+  $('#go-payrun', v).addEventListener('click', () => openPayRunSheet());          // NEW(v3.2)
 }
 
 /* ── NEW(v3.1): bills calendar (unfolded) ─────────────────────────────
@@ -415,45 +526,29 @@ export function billCalendarHTML(bills, year, month, isCurrentMonth, todayDay){
   `;
 }
 
-// FIX(v3.0): double-tap safe, per bill — two quick taps used to log two
-// payment transactions (and orphan the first).
-export const payBill = busyGuard(async (billId) => {
-  const bill = state.bills.find(b => b.id === billId);
-  if (!bill) return;
-  const { year, month } = state.selected;
+// Where a bill's payment is dated: today in the current month; otherwise the
+// bill's own due date (one-time) or month + due day.
+function billPayDate(bill, year, month){
   const ym = ymOf(year, month);
-  if (isBillPaid(bill, ym)) { toast('Already paid'); return; }
-
-  // Auto-cc: the linked card's balance FOR THE VIEWED MONTH (FIX v2.10.2).
-  const isAuto = bill.recurrence === 'auto-cc';
-  const payAmount = round2(isAuto ? getBillAmount(bill, year, month) : bill.amount);
-  if (isAuto && payAmount <= 0){
-    toast('Nothing to pay — balance is $0');
-    return;
-  }
-
   const now = new Date();
-  const isCurrent = year === now.getFullYear() && month === now.getMonth() + 1;
-  // Today if paying in the current month; otherwise the bill's dueDate (one-
-  // time, if it's in the viewed month) or the month + dueDay.
-  let dateIso;
-  if (isCurrent){
-    dateIso = today();
-  } else if (bill.recurrence === 'once' && bill.dueDate && bill.dueDate.slice(0, 7) === ym){
-    dateIso = bill.dueDate;
-  } else {
-    const dueDay = getBillDueDay(bill);
-    dateIso = `${ym}-${String(Math.min(dueDay, 28)).padStart(2,'0')}`;
-  }
+  if (year === now.getFullYear() && month === now.getMonth() + 1) return today();
+  if (bill.recurrence === 'once' && bill.dueDate && bill.dueDate.slice(0, 7) === ym) return bill.dueDate;
+  return `${ym}-${String(Math.min(getBillDueDay(bill), 28)).padStart(2,'0')}`;
+}
 
+// NEW(v3.2): the one place a bill payment is logged — the Pay button and the
+// Pay run both go through it. Caller handles toasts and re-rendering.
+export async function logBillPayment(bill, year, month, amount, dateIso){
+  const ym = ymOf(year, month);
+  const isAuto = bill.recurrence === 'auto-cc';
   const txn = {
     id: uid(),
-    date: dateIso,
+    date: dateIso || billPayDate(bill, year, month),
     type: bill.type || 'Expense',
     account: isAuto ? bill.linkedAccount : bill.account,
     category: bill.category || bill.name,
     description: bill.name + ' (auto)',
-    amount: payAmount,
+    amount: round2(amount),
     fromAccount: bill.fromAccount || null
   };
   await dbPut('transactions', txn);
@@ -462,12 +557,117 @@ export const payBill = busyGuard(async (billId) => {
 
   bill.paidMonths = bill.paidMonths || {};
   bill.paidMonths[ym] = txn.id;
+  if (isVariableBill(bill)) setActual(bill, ym, txn.amount);
   await dbPut('bills', bill);
+  return txn;
+}
+
+// FIX(v3.0): double-tap safe, per bill — two quick taps used to log two
+// payment transactions (and orphan the first).
+// NEW(v3.2): `amount` overrides what's owed (the amount sheet passes it); a
+// variable bill whose amount isn't in yet asks for it first.
+export const payBill = busyGuard(async (billId, amount) => {
+  const bill = state.bills.find(b => b.id === billId);
+  if (!bill) return;
+  const { year, month } = state.selected;
+  const ym = ymOf(year, month);
+  if (isBillPaid(bill, ym)) { toast('Already paid'); return; }
+  if (amount == null && isBillEstimated(bill, ym)){ openBillAmountSheet(bill.id, ym, { pay: true }); return; }
+
+  // Auto-cc: the linked card's balance FOR THE VIEWED MONTH (FIX v2.10.2).
+  const isAuto = bill.recurrence === 'auto-cc';
+  const payAmount = round2(amount != null ? amount : getBillAmount(bill, year, month));
+  if (isAuto && payAmount <= 0){
+    toast('Nothing to pay — balance is $0');
+    return;
+  }
+  await logBillPayment(bill, year, month, payAmount);
 
   haptic(15); /* NEW(v2.2) */
   toast('Marked paid · transaction logged');
   renderCurrent();
 }, (billId) => billId);
+
+/* NEW(v3.2): "what is it this month?" — the amount sheet for a variable bill.
+   Save the amount (Real available and the forecast use it from then on), or
+   save and pay in one go. */
+export function openBillAmountSheet(billId, ym, { pay = false } = {}){
+  const bill = state.bills.find(b => b.id === billId);
+  if (!bill) return;
+  const [y, m] = ym.split('-').map(Number);
+  const cur = billMonthAmount(bill, ym);
+  const hist = billHistory(bill).filter(([k]) => k < ym).slice(-6).reverse();
+  $('#sheetBody').innerHTML = `
+    <h2>${esc(bill.name)} · ${monthName(m, true)} ${y}</h2>
+    <div class="muted small" style="margin-bottom:12px;line-height:1.5;">
+      ${isBillEstimated(bill, ym) ? 'Ledger is estimating this month from your recent bills.' : 'This month\'s amount is entered.'}
+      Enter what you were billed once you know it.
+    </div>
+    <div class="field"><label for="ba-amt">Amount this month</label>
+      <input class="input" id="ba-amt" type="text" inputmode="decimal" value="${cur ? cur.toFixed(2) : ''}" /></div>
+    ${hist.length ? `<div class="muted small" style="margin:-4px 0 14px;">Recent: ${hist.map(([k, a]) => `${esc(monthName(Number(k.slice(5)), true))} ${fmt(a)}`).join(' · ')}</div>` : ''}
+    ${pay ? '<button class="btn" id="ba-pay">Pay it</button><button class="btn ghost" id="ba-save" style="margin-top:10px;">Save amount only</button>'
+          : '<button class="btn" id="ba-save">Save amount</button><button class="btn secondary" id="ba-pay" style="margin-top:10px;">Save &amp; pay</button>'}
+  `;
+  openSheet();
+  const read = () => {
+    const v = parseAmount($('#ba-amt').value);
+    if (isNaN(v) || v <= 0){ toast('Enter a valid amount'); return null; }
+    return round2(v);
+  };
+  $('#ba-save').addEventListener('click', busyGuard(async () => {
+    const v = read(); if (v == null) return;
+    setActual(bill, ym, v);
+    await dbPut('bills', bill);
+    closeSheet(); renderCurrent();
+    toast(`${bill.name}: ${fmt(v)} for ${monthName(m, true)}`);
+  }));
+  $('#ba-pay').addEventListener('click', async () => {
+    const v = read(); if (v == null) return;
+    closeSheet();
+    await payBill(bill.id, v);
+  });
+}
+
+/* NEW(v3.2): link any transaction to a bill by hand — for a payment whose
+   amount (or source account) doesn't match what the bill says. */
+export function openLinkPaymentSheet(billId, ym){
+  const bill = state.bills.find(b => b.id === billId);
+  if (!bill) return;
+  const linked = new Set();
+  for (const bb of state.bills) for (const id of Object.values(bb.paidMonths || {})) linked.add(id);
+  const auto = bill.recurrence === 'auto-cc';
+  const type = auto ? 'CC Payment' : (bill.type || 'Expense');
+  const acct = auto ? bill.linkedAccount : bill.account;
+  const [y, m] = ym.split('-').map(Number);
+  const prev = ymOf(m === 1 ? y - 1 : y, m === 1 ? 12 : m - 1);
+  const want = billMonthAmount(bill, ym);
+  const cands = state.transactions
+    .filter(t => t.type === type && t.account === acct && !linked.has(t.id) && t.date && (t.date.slice(0, 7) === ym || t.date.slice(0, 7) === prev))
+    .sort((a, b) => Math.abs(a.amount - want) - Math.abs(b.amount - want) || b.date.localeCompare(a.date))
+    .slice(0, 40);
+  $('#sheetBody').innerHTML = `
+    <h2>Link a payment · ${esc(bill.name)}</h2>
+    <div class="muted small" style="margin-bottom:12px;line-height:1.5;">Pick the transaction that paid ${esc(bill.name)} for ${monthName(m, true)} ${y}. Closest amounts first.</div>
+    ${cands.length === 0
+      ? `<div class="muted small" style="padding:14px 0;">No unlinked ${esc(type)} on ${esc(acct)} in ${esc(monthName(m, true))} or ${esc(monthName(Number(prev.slice(5)), true))}.</div>`
+      : cands.map(t => `
+        <button type="button" class="rec-row lp-row" data-id="${esc(t.id)}" style="width:100%;font:inherit;color:inherit;cursor:pointer;text-align:left;">
+          <div style="min-width:0;flex:1;">
+            <div style="font-size:13.5px;font-weight:500;">${fmt(t.amount)}${t.description ? ' · ' + esc(t.description) : ''}</div>
+            <div class="muted small">${esc(t.date)}${t.fromAccount ? ' · from ' + esc(t.fromAccount) : ''}</div>
+          </div>
+          <span class="btn secondary" style="width:auto;padding:6px 12px;font-size:12px;">Link</span>
+        </button>`).join('')}
+    <button class="btn ghost" id="lp-cancel" style="margin-top:12px;">Cancel</button>
+  `;
+  openSheet();
+  $$('.lp-row').forEach(r => r.addEventListener('click', busyGuard(async () => {
+    closeSheet();
+    await markBillPaidWith(bill, ym, r.dataset.id);
+  }, () => 'lp')));
+  $('#lp-cancel').addEventListener('click', closeSheet);
+}
 
 export const unpayBill = busyGuard(async (billId) => {
   const bill = state.bills.find(b => b.id === billId);
@@ -525,7 +725,29 @@ export function openBillSheet(billId){
     linkedAccount: existing?.linkedAccount || ccAccts[0]?.name || '',
     closeDay: existing?.closeDay || 15,
     graceDays: existing?.graceDays != null ? existing.graceDays : 21,
-    ccAmount: existing?.ccAmount === 'statement' ? 'statement' : 'current'   // NEW(v3.1)
+    ccAmount: existing?.ccAmount === 'statement' ? 'statement' : 'current',   // NEW(v3.1)
+    variable: existing?.variable === true,                                    // NEW(v3.2)
+    estMode: ['avg3', 'last', 'fixed'].includes(existing?.estMode) ? existing.estMode : 'avg3',
+    amounts: { ...(existing?.amounts || {}) },
+    paidMonths: { ...(existing?.paidMonths || {}) }
+  };
+  const selYm = ymOf(state.selected.year, state.selected.month);
+
+  // NEW(v3.2): past charges that look like this bill (same account, and the
+  // bill's category — or its name in the description), one per month, newest.
+  const importCandidates = () => {
+    const linkedIds = new Set();
+    for (const bb of state.bills) for (const id of Object.values(bb.paidMonths || {})) linkedIds.add(id);
+    const cat = f.category.trim(), name = squash(f.name);
+    const byMonth = {};
+    for (const t of state.transactions){
+      if (t.type !== 'Expense' || t.account !== f.account || !t.date || linkedIds.has(t.id)) continue;
+      const hit = (cat && t.category === cat) || (name.length >= 3 && squash(t.description).includes(name));
+      if (!hit) continue;
+      const ym = t.date.slice(0, 7);
+      if (!byMonth[ym] || t.date > byMonth[ym].date) byMonth[ym] = t;
+    }
+    return Object.entries(byMonth).sort().slice(-12);     // [[ym, txn], …]
   };
 
   const acctOptionsForType = () => {
@@ -558,6 +780,34 @@ export function openBillSheet(billId){
     const acctOpts = acctOptionsForType();
     if (!acctOpts.find(a => a.name === f.account)) f.account = acctOpts[0]?.name || '';
     if (needsFrom() && !checking.find(a => a.name === f.fromAccount)) f.fromAccount = checking[0]?.name || '';
+
+    const varyingHTML = () => {
+      const tmp = { paidMonths: f.paidMonths, amounts: f.amounts };
+      const hist = billHistory(tmp).slice(-6).reverse();
+      return `
+        <div class="field">
+          <label>Does the amount change?</label>
+          <div class="seg" id="bf-var" role="tablist">
+            <button type="button" class="seg-btn ${!f.variable ? 'active' : ''}" data-v="fixed">Same each month</button>
+            <button type="button" class="seg-btn ${f.variable ? 'active' : ''}" data-v="varies">Varies</button>
+          </div>
+        </div>
+        ${f.variable ? `
+          <div class="field">
+            <label>Estimate from</label>
+            <div class="seg seg-3" id="bf-est" role="tablist">
+              <button type="button" class="seg-btn ${f.estMode === 'avg3' ? 'active' : ''}" data-v="avg3">3-mo average</button>
+              <button type="button" class="seg-btn ${f.estMode === 'last' ? 'active' : ''}" data-v="last">Last month</button>
+              <button type="button" class="seg-btn ${f.estMode === 'fixed' ? 'active' : ''}" data-v="fixed">Fixed</button>
+            </div>
+          </div>
+          <div class="muted small" style="margin:-4px 0 12px;line-height:1.5;">
+            Until you enter the real amount, Ledger counts the estimate (the number above is the fallback when there's no history). Enter the amount when the bill arrives — or just log the payment and link it.
+            ${hist.length ? `<br>History: ${hist.map(([k, a]) => `${esc(monthName(Number(k.slice(5)), true))} ${fmt(a)}`).join(' · ')}` : ''}
+          </div>
+          <button type="button" class="btn ghost" id="bf-import" style="margin-bottom:14px;">Import past charges from my transactions</button>
+        ` : ''}`;
+    };
 
     $('#sheetBody').innerHTML = `
       <h2>${existing ? 'Edit' : 'New'} Bill</h2>
@@ -600,11 +850,12 @@ export function openBillSheet(billId){
         `}
       ` : `
         <div class="row-2">
-          <div class="field"><label>Amount</label><input class="input" id="bf-amt" type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.amount)}" /></div>
+          <div class="field"><label>${f.variable && f.recurrence === 'monthly' ? 'Estimate' : 'Amount'}</label><input class="input" id="bf-amt" type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.amount)}" /></div>
           ${isOnce
             ? `<div class="field"><label>Due Date</label><input class="input" id="bf-date" type="date" value="${esc(f.dueDate)}" /></div>`
             : `<div class="field"><label>Due Day (1–31)</label><input class="input" id="bf-day" type="number" min="1" max="31" inputmode="numeric" value="${esc(f.dueDay)}" /></div>`}
         </div>
+        ${f.recurrence === 'monthly' ? varyingHTML() : ''}
         ${pickerBtn('bf-type', 'Type', f.type)}
         ${pickerBtn('bf-acct', acctLabelForType(), f.account)}
         ${needsFrom() ? pickerBtn('bf-from', 'From (Checking)', f.fromAccount) : ''}
@@ -619,6 +870,8 @@ export function openBillSheet(billId){
         </div>
       </div>
       <button class="btn" id="bf-save">Save Bill</button>
+      ${existing && !isBillPaid(existing, selYm)
+        ? `<button type="button" class="btn ghost" id="bf-link" style="margin-top:10px;">Link a payment to ${esc(monthName(state.selected.month, true))}…</button>` : ''}
       ${existing ? '<button class="btn danger" id="bf-del" style="margin-top:10px;">Delete Bill</button>' : ''}
     `;
     wire();
@@ -665,6 +918,24 @@ export function openBillSheet(billId){
       if (isOnce) $('#bf-date').addEventListener('input', e => f.dueDate = e.target.value);
       else $('#bf-day').addEventListener('input', e => f.dueDay = clamp(parseInt(e.target.value)||1, 1, 31));
       $('#bf-cat').addEventListener('input', e => f.category = e.target.value);
+      if (f.recurrence === 'monthly'){
+        $$('#bf-var .seg-btn').forEach(b => b.addEventListener('click', () => { f.variable = b.dataset.v === 'varies'; render(); }));
+        $$('#bf-est .seg-btn').forEach(b => b.addEventListener('click', () => { f.estMode = b.dataset.v; render(); }));
+        $('#bf-import')?.addEventListener('click', () => {
+          const found = importCandidates();
+          if (!found.length){ toast('No matching charges found — set the category or name first'); return; }
+          // A charge that already happened IS that month's payment — link it (so the
+          // month doesn't read as unpaid and count against Real available a second time).
+          let n = 0;
+          for (const [ym, t] of found){
+            if (f.paidMonths[ym] || f.amounts[ym] != null) continue;
+            if (ym <= currentYm()) f.paidMonths[ym] = t.id; else f.amounts[ym] = round2(t.amount);
+            n++;
+          }
+          toast(n ? `Imported ${n} month${n === 1 ? '' : 's'} of history` : 'Already have those months');
+          render();
+        });
+      }
 
       $('#bf-type').addEventListener('click', () => {
         openPicker('Bill Type', ['Expense','CC Payment','Loan Payment'], f.type, (val) => {
@@ -690,6 +961,7 @@ export function openBillSheet(billId){
     }
 
     $('#bf-save').addEventListener('click', save);
+    $('#bf-link')?.addEventListener('click', () => openLinkPaymentSheet(existing.id, selYm));   // NEW(v3.2)
     if (existing){
       $('#bf-del').addEventListener('click', busyGuard(async () => {
         // FIX(v2.9.2): immediate delete + Undo toast instead of confirm().
@@ -718,9 +990,17 @@ export function openBillSheet(billId){
       name: f.name.trim(),
       recurrence: f.recurrence,
       active: f.active,
-      paidMonths: existing?.paidMonths || {},
+      paidMonths: f.paidMonths,
       notes: existing?.notes || ''
     };
+    // NEW(v3.2): a variable bill keeps its actuals; everything else drops the flag.
+    if (f.recurrence === 'monthly' && f.variable){
+      obj.variable = true;
+      obj.estMode = f.estMode;
+      obj.amounts = { ...f.amounts };
+    } else if (existing?.amounts && Object.keys(existing.amounts).length){
+      obj.amounts = { ...existing.amounts };      // history survives a switch back to fixed
+    }
     if (!obj.name) { toast('Name required'); return; }
 
     if (isAuto){
@@ -768,6 +1048,10 @@ export function openBillSheet(billId){
       });
     }
 
+    if (obj.variable && obj.estMode !== 'fixed'){            // NEW(v3.2): the stored number follows the history
+      const e = billEstimate(obj, '9999-99');
+      if (e) obj.amount = e;
+    }
     await dbPut('bills', obj);
     const i = state.bills.findIndex(x => x.id === obj.id);
     if (i >= 0) state.bills[i] = obj; else state.bills.push(obj);

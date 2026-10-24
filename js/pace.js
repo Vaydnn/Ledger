@@ -40,7 +40,7 @@ import { toCents, fromCents, round2, addDays, parseLocalDate, squash } from './u
 import { state, dataVersion } from './db.js';
 import { monthTotals } from './effects.js';
 import { detectRecurring } from './subscriptions.js';
-import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid } from './bills.js';
+import { billAppliesToMonth, getBillAmount, getBillDueDay, isBillPaid, seriesCoveredByBill } from './bills.js';
 import { budgetMonth } from './budgets.js';   // NEW(v3.1): rollover targets
 
 // Bills that are spending (as opposed to paying down a card or loan).
@@ -138,8 +138,7 @@ export function computePace(){
   for (const r of recurring) for (const id of r.txnIds) recurringIds.add(id);
   // remaining: next occurrence falls within (today, month-end], skipping
   // anything the bills store already covers (no double counting)
-  const coveredByBill = (r) => (r.category && billCategories.has(r.category)) ||
-    billNames.some(n => squash(r.label).includes(n));
+  const coveredByBill = (r) => seriesCoveredByBill(r);   // v3.2: shared test (adds same card + price + day)
   for (const r of recurring){
     if (coveredByBill(r)) continue;
     let next = r.next;

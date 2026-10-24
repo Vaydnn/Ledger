@@ -13,6 +13,7 @@ import { $$, fmt, esc, today, toLocalISO, daysBetween, uid, toastAction, toast, 
 import { state, dbPut, dbDel, saveFlags } from './db.js';
 import { detectRecurring } from './subscriptions.js';
 import { invalidateMerchantCache } from './merchants.js';
+import { seriesCoveredByBill } from './bills.js';
 
 const MONTHS = { 30: 1, 60: 2, 91: 3, 365: 12 };
 const GRACE_DAYS = 3;
@@ -34,10 +35,7 @@ function usualDay(txns){
   return Number(Object.entries(n).sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0]);
 }
 
-function coveredByBill(r){
-  return state.bills.some(b => b.active !== false && b.recurrence !== 'auto-cc' && (b.type || 'Expense') === 'Expense' &&
-    ((b.category && b.category === r.category) || (squash(b.name).length >= 3 && squash(r.label).includes(squash(b.name)))));
-}
+const coveredByBill = seriesCoveredByBill;   // v3.2: shared with the forecast and Pace
 
 // [{ key, label, due, late, txn: the latest charge (template) }]
 export function recurringPrompts(todayIso = today()){

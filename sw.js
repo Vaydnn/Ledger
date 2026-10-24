@@ -8,7 +8,7 @@
 // within 10 minutes of the previous one could fill its cache with the OLD
 // files straight out of the browser's HTTP cache — a new sw.js running last
 // release's code.
-const VERSION = 'ledger-v3.1.0';
+const VERSION = 'ledger-v3.2.0';
 const CORE = [
   './',
   './index.html',
@@ -56,6 +56,8 @@ const CORE = [
   './js/tags.js',
   './js/recurring.js',
   './js/statement.js',
+  './js/nextmonth.js', // NEW(v3.2)
+  './js/cards.js',     // NEW(v3.2)
   './js/charts.js'
 ];
 

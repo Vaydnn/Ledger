@@ -44,7 +44,10 @@
       }
       const daysUntil = daysBetween(todayIso, due);
       if (daysUntil > ahead) continue;
-      out.push({ id: b.id, name: b.name || 'Bill', amount: b.recurrence === 'auto-cc' ? null : (b.amount || 0),
+      // v3.2: a variable bill shows this month's amount once it's in, else the estimate ("~").
+      const known = !!b.variable && !!b.amounts && b.amounts[ym] != null;
+      out.push({ id: b.id, name: b.name || 'Bill', amount: b.recurrence === 'auto-cc' ? null : (known ? Number(b.amounts[ym]) : (b.amount || 0)),
+                 est: !!b.variable && !known,
                  dueIso: due, daysUntil, overdue: daysUntil < 0 });
     }
     return out.sort((a, b) => a.daysUntil - b.daysUntil);
@@ -63,7 +66,7 @@
     const money = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return {
       title: list.length === 1 ? `${list[0].name} is due ${when(list[0])}` : `${list.length} bills due soon`,
-      body: list.map(d => `${d.name}${d.amount != null && !hide ? ' ' + money(d.amount) : ''} · ${when(d)}`).join('\n')
+      body: list.map(d => `${d.name}${d.amount != null && !hide ? ' ' + (d.est ? '~' : '') + money(d.amount) : ''} · ${when(d)}`).join('\n')
     };
   }
 

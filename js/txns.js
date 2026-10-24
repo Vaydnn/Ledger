@@ -30,6 +30,15 @@ export function filterActivityByAccount(name){
   resetRenderCap();
 }
 
+// NEW(v3.2): an insight about a category lands in Activity searching for it.
+export function filterActivityBySearch(text){
+  txnFilters.search = text;
+  txnFilters.account = null;
+  txnFilters.type = 'all';
+  txnFilters.month = 'current';
+  resetRenderCap();
+}
+
 // NEW(v2.5): render cap. "All months" over years of history built 1,000+
 // DOM rows on every visit — layout cost dwarfs the JS math on mobile. The
 // list renders the newest CAP rows and offers one tap to render the rest.

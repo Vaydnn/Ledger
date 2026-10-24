@@ -971,6 +971,8 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
   padding:10px 0;border-bottom:1px solid var(--line);
 }
 .insights-card .insight-row:last-child{border-bottom:0;}
+.insight-row.is-act{cursor:pointer;}
+.insight-row.is-act:active{background:var(--bg-3);}
 .insight-dot{
   width:8px;height:8px;border-radius:50%;margin-top:7px;flex-shrink:0;
   box-shadow:0 0 0 3px rgba(255,255,255,.02);
@@ -1179,7 +1181,7 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:14px 0;}
   margin-top:6px;font-size:11.5px;color:var(--text-2);
   display:flex;align-items:center;gap:8px;flex-wrap:wrap;
 }
-.bill-link{
+.bill-link, .bill-enter{
   font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--ember);
   padding:3px 10px;border:1px solid rgba(232,153,84,.45);border-radius:999px;
 }
@@ -1438,6 +1440,42 @@ body.privacy .pv{transition:filter .18s;border-radius:4px;}
 :root[data-theme="black"] .migrate-banner,
 :root[data-theme="black"] .about-brand{background:var(--bg-2);}
 
+
+/* ── NEW(v3.2) ─────────────────────────── */
+/* Variable bills: a "Varies" tag, "est." under a guessed amount */
+.bill-var-tag{
+  display:inline-block;font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  padding:1.5px 6px;margin-left:6px;border-radius:4px;
+  background:rgba(232,153,84,.12);color:var(--ember-2);border:1px solid rgba(232,153,84,.35);
+  vertical-align:1px;
+}
+.bill-est{font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;font-family:'Geist',sans-serif;margin-top:2px;}
+.bill-enter{margin-left:6px;}
+/* Bills: Next month / Pay run buttons */
+.bill-tools{display:flex;gap:10px;margin:12px 0 4px;}
+.bill-tools .btn{flex:1;padding:10px 12px;font-size:13px;}
+/* Card statements */
+.cs-row{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;text-align:left;font:inherit;color:inherit;
+  background:none;border:0;border-top:1px solid var(--line);padding:11px 0;cursor:pointer;}
+.cs-row:first-of-type{border-top:0;}
+.cs-name{font-size:14px;font-weight:500;}
+.cs-r{text-align:right;flex-shrink:0;}
+/* Next month preview + Pay run */
+.nm-sec{margin-top:14px;}
+.nm-sec-h{font-size:10.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.14em;margin:0 0 4px;}
+.nm-row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:4px 0;font-size:13.5px;color:var(--text-2);}
+.nm-row .nm-l{min-width:0;flex:1;}
+.nm-row .nm-sub{display:block;font-size:11px;color:var(--text-3);margin-top:1px;}
+.nm-row.nm-total{padding-top:9px;margin-top:5px;border-top:1px solid var(--line);color:var(--text);font-weight:500;}
+.nm-row.nm-minor{font-size:12.5px;opacity:.85;}
+.nm-note{font-size:11.5px;color:var(--text-3);line-height:1.5;margin-top:10px;}
+.pr-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);}
+.pr-row .pr-body{min-width:0;flex:1;}
+.pr-row .pr-name{font-size:14px;font-weight:500;}
+.pr-row .pr-meta{font-size:11.5px;color:var(--text-3);margin-top:2px;}
+.pr-row .pr-amt{width:96px;text-align:right;font-family:'JetBrains Mono',monospace;}
+.pr-row.is-off{opacity:.45;}
+.pr-total{display:flex;justify-content:space-between;padding:12px 0 4px;font-weight:500;}
 </style>
 </head>
 <body>

@@ -1,8 +1,43 @@
-# Ledger PWA · v3.1.0
+# Ledger PWA · v3.2.0
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
-**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (23 suites, 775 checks, synthetic data).
+**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (28 suites, 1032 checks, synthetic data).
+
+## What's new in v3.2.0
+
+No data migration — v3.1 data opens as-is (every new field is optional, and an old backup restores unchanged).
+
+### Bills that change every month
+- **"Does the amount change?" → Varies** on a monthly bill (a phone bill). Ledger counts an **estimate** — the 3-month average of what it actually was (or last month's, or a fixed number) — until you enter the real amount. The Bills row reads **~$395 est.** with an **Enter amount** link; Real available, Safe to spend, the forecast and reminders all use the estimate and then the real number.
+- **Enter amount** saves it without paying; **Save & pay** (or the check circle) pays it. Pay a bill you've logged yourself and **Link** picks the amount up from the payment — a variable bill matches any plausible amount, and the next estimate follows.
+- **Import past charges** in the bill editor links the matching charges you already logged (one per month, same account + category/name) as those months' payments, so the history is there from day one and nothing counts as unpaid twice.
+
+### Next month + the pay run (you pay everything on the 1st)
+- **Next month** (Home card; button on the Bills tab) walks your cash through the next pay run: cash today − what's due before it = going in, − the run (every card you pay in full + the bills due that month) = after the run, then the paychecks and charges later in the cycle, the lowest point, and what's already building on your cards for the run after. Known money only — everyday spending isn't in it.
+- **Pay-run day** is a setting (default the 1st) — at the bottom of the preview. Cards "paid in full" are the ones checked in Real available's ⚙.
+- **Pay run** checklist (Bills tab; a Home card appears on the day): tick what you're paying, adjust an amount, **Pay N items** logs them all (cards from the account you usually pay them from) with a single **Undo**.
+
+### Card statements (the way you actually pay them)
+- **Card statements** (Home card; tap a card, or the "statement … due …" line on an account): the **statement balance** — what you owe from the last closing day — kept apart from **what you've charged since it closed** (that rides on the *next* statement), with what's still due and the due date.
+- **Enter the statement balance your bank shows** (say RH closed on the 22nd at $4,000). It counts for that one statement; once the next one closes Ledger goes back to computing it. Ledger keeps its own number alongside, and an **insight** points out when the two disagree (something unlogged, or doubled).
+- Each card has a **pay mode** — *Statement balance* or *Everything owed*. The **Pay run** and **Next month** preview pay the statement still due (RH: $4,000, not the whole balance), show what's left behind for the next statement, and project the next one (what's carried + the charges until it closes).
+- **Track as an Auto (CC) bill** in one tap: a bill on the statement still due, paid from the account you usually pay the card from. Set the close day / grace days once; the card and its bill stay in step.
+- Spending since the last close, by category, per card.
+
+### Insights → "Worth a look"
+The old card repeated things that are always true ("5 months in the green", "Biggest category: Groceries", an expense pace the Pace card already shows). Rebuilt: an insight has to be **new or actionable**, and the card **disappears when there's nothing to say**.
+- New: *cash runs short / gets tight* after the next pay run · *your entered statement doesn't match Ledger's* · *a statement due within a week (or past due)* · *a variable bill came in off its average* · *the last 7 days vs a typical week* · category outliers now **name the merchant** behind them.
+- Kept: possible duplicates, budget breaches, subscription price changes, income dips, big tickets, bills clustering.
+- Every row has **×** (stays gone until its subject changes — a new month, a different number) and **opens what it's about** (the card, Bills, Next month, Activity…).
+
+### Fixes
+- **Safe to spend and a paycheck logged ahead of payday.** If payroll cleared early and you logged it on its normal date, that paycheck is already in checking — it no longer counts as "the next payday" (it said "payday tomorrow, $1,859/day"). Twice-a-month pay (the 10th and 25th) is recognised and follows the calendar.
+- **The forecast had no paychecks.** A new job's pay was buried under a year of the old one, so no income was detected. Detection now looks at the recent regime too; the forecast projects paychecks on their days and never twice.
+- **The forecast counted one charge three times** (a detected ISP charge next to your Internet bill). A recurring charge is now "covered" by a bill when the card, price (±5%) and time of month match, not only when the names do.
+- **Cards you pay in full** leave cash on pay-run day as one payment (balance + the charges that land before it) instead of never — the 90-day line used to ignore a multi-thousand-dollar card.
+- **Past-due monthly bills** land today in the forecast and Safe to spend, as Real available already counted them.
+- **A payment that doesn't match its bill** (a different amount, or from the other checking account) can be linked by hand: bill editor → **Link a payment**. Matching no longer requires the same From account.
 
 ## What's new in v3.1.0
 

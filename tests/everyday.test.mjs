@@ -39,8 +39,11 @@ for (let k = 0; k < 7; k++){
 // Bigger but irregular side income — mustn't be taken for the paycheck.
 for (const d of [-2, -9, -11, -30, -31, -58, -90]) await dbPut('transactions', txn({ date: D(d), type:'Income', account:'Checking', category:'Gig', amount: 700 }));
 const dueIn = (n) => util.addDays(new Date(), n).getDate();
-await dbPut('bills', { id:'b-soon', name:'Power', recurrence:'monthly', type:'Expense', account:'Checking', category:'Utilities', amount: 120, dueDay: dueIn(3), active:true, paidMonths:{} });
-await dbPut('bills', { id:'b-late', name:'Rent', recurrence:'monthly', type:'Expense', account:'Checking', category:'Rent', amount: 1000, dueDay: dueIn(16), active:true, paidMonths:{} });
+// v3.2: an unpaid bill whose day already passed this month is OVERDUE (due now), so a bill
+// whose next due date is next month (day-of-month wrapped) is this month's, paid.
+const paidIfWrapped = (n) => dueIn(n) < new Date().getDate() ? { [util.currentYm()]: 'prior' } : {};
+await dbPut('bills', { id:'b-soon', name:'Power', recurrence:'monthly', type:'Expense', account:'Checking', category:'Utilities', amount: 120, dueDay: dueIn(3), active:true, paidMonths: paidIfWrapped(3) });
+await dbPut('bills', { id:'b-late', name:'Rent', recurrence:'monthly', type:'Expense', account:'Checking', category:'Rent', amount: 1000, dueDay: dueIn(16), active:true, paidMonths: paidIfWrapped(16) });
 await dbPut('bills', { id:'b-cc', name:'Card bill', recurrence:'auto-cc', linkedAccount:'Card', closeDay: dueIn(5), graceDays: 0, active:true, paidMonths:{} });
 await loadState();
 state.flags.anchorsV3 = true;
