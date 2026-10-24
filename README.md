@@ -1,8 +1,14 @@
-# Ledger PWA · v3.2.0
+# Ledger PWA · v3.2.1
 
 Personal financial tracker PWA. Installs on iOS/Android home screen, works offline, **data never leaves the device** — this repo contains code, a synthetic demo seed, and synthetic test fixtures only.
 
-**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (28 suites, 1032 checks, synthetic data).
+**Deploying / installing / updating: see [DEPLOY.md](DEPLOY.md).** Tests: `npm install && npm test` (29 suites, 1071 checks, synthetic data).
+
+## What's new in v3.2.1
+
+- **"I'll pay X" on a card bill, in any month.** On the Bills tab, a card's Auto (CC) bill (Citi, RH…) has a **Set payment** link. It shows the statement, what you've paid since it closed, what's still due and what you've charged since — then you type what you'll pay and it tells you the **difference that's left on the statement**, live. **Save**, or **Save & pay** (logs a CC Payment for that amount).
+- The planned amount drives **Real available, the pay run, the Next month preview and the forecast** for that month; **Use the full statement** clears it. November's bill on a statement card is the statement due then.
+- The sheet has **Set the statement balance…** (opens the card's sheet, where you enter what your bank shows), and the card sheet has **Plan this month's payment…**.
 
 ## What's new in v3.2.0
 

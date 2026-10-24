@@ -24,6 +24,7 @@ import { state, dbPut, saveFlags } from './db.js';
 import { openSheet, closeSheet } from './sheet.js';
 import { statementInfo, cardCycle, cardPayMode, cycleSpending } from './statement.js';
 import { renderCurrent } from './app.js';
+import { openBillAmountSheet } from './bills.js';
 
 const fmtDay = (iso) => { const d = parseLocalDate(iso); return `${monthName(d.getMonth() + 1, true)} ${d.getDate()}`; };
 const cards = () => state.accounts.filter(a => a.active && a.type === 'Credit Card');
@@ -134,7 +135,8 @@ export function openCardSheet(name){
     <div class="nm-sec">
       <div class="nm-sec-h">Bill</div>
       ${bill
-        ? `<div class="muted small" style="line-height:1.5;">Tracked by the Auto (CC) bill “${esc(bill.name)}” — ${bill.ccAmount === 'statement' ? 'it amounts to the statement still due' : 'it amounts to the current balance'}.</div>`
+        ? `<div class="muted small" style="line-height:1.5;margin-bottom:8px;">Tracked by the Auto (CC) bill “${esc(bill.name)}” — ${bill.ccAmount === 'statement' ? 'it amounts to the statement still due' : 'it amounts to the current balance'}.</div>
+           <button type="button" class="btn secondary" id="cs-plan">Plan this month's payment…</button>`
         : `<div class="muted small" style="line-height:1.5;margin-bottom:8px;">Track this card as an Auto (CC) bill: it shows in Bills with the statement still due and the due date, and you can pay it from there.</div>
            <button type="button" class="btn secondary" id="cs-bill">Track as an Auto (CC) bill</button>`}
     </div>
@@ -189,6 +191,7 @@ export function openCardSheet(name){
     refresh();
   }));
 
+  $('#cs-plan')?.addEventListener('click', () => openBillAmountSheet(bill.id, `${state.selected.year}-${String(state.selected.month).padStart(2, '0')}`));
   $('#cs-bill')?.addEventListener('click', busyGuard(async () => {
     const from = payerFor(name);
     if (!from){ toast('Add a checking account first'); return; }

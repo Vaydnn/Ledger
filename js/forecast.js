@@ -44,7 +44,7 @@ import { balanceLatest, acctTypeMap } from './effects.js';
 import { openSheet } from './sheet.js';
 import { detectRecurring } from './subscriptions.js';
 import { cardPayMode, cardCycle, statementInfo, lastClose } from './statement.js';
-import { getBillAmount, isBillPaid, billMonthAmount, isVariableBill, isBillEstimated, seriesCoveredByBill } from './bills.js';
+import { getBillAmount, isBillPaid, billMonthAmount, isVariableBill, isBillEstimated, seriesCoveredByBill, plannedCardPayment } from './bills.js';
 
 // Project the next due date for an auto-cc bill, given today.
 // We assume close+grace ≈ a real-world due date once a month. Find
@@ -271,7 +271,9 @@ export function buildEvents(days){
   // NEW(v3.2): cards you pay on pay-run day — one payment per run. A card on
   // "statement" mode pays the statement that has closed (or will close before
   // that run); whatever is charged after the closing day rides on the next
-  // statement. A card on "full" pays everything owed by then.
+  // statement. A card on "full" pays everything owed by then. If you said
+  // "I'll pay X" for that month (the card's Auto (CC) bill), X is the payment
+  // and the rest stays on the card.
   const runs = full.length ? runDatesBetween(todayD, endD) : [];
   const dayLbl = (d) => `${monthName(d.getMonth() + 1, true)} ${d.getDate()}`;
   for (const card of full){
@@ -287,29 +289,37 @@ export function buildEvents(days){
     const info = cyc ? statementInfo(card, toLocalISO(todayD)) : null;
     let bal = Math.max(0, balanceLatest(card));          // owed now, grows with the charges ahead
     runs.forEach((run, i) => {
-      let pay, carry = 0, charges = 0, detail;
+      let owed, carry = 0, charges = 0, extra = 0, closed = false, detail;
       if (!cyc){
-        carry = bal; charges = take(run, false); pay = carry + charges; bal = 0;
+        carry = bal; charges = take(run, false); owed = carry + charges;
         detail = i === 0 && carry > 0.004
           ? `Balance ${fmt(carry)}${charges > 0.004 ? ` + ${fmt(charges)} expected charges` : ''}`
           : 'Charges since the last pay run';
       } else {
         const c = lastClose(cyc.closeDay, toLocalISO(run));
         if (c <= todayD){                                  // already closed → what's still due
-          pay = i === 0 && info ? info.remaining : 0; carry = pay;
-          bal = Math.max(0, bal + take(run, false) - pay);
-          detail = `Statement closed ${dayLbl(c)}${info && info.entered ? ' (entered)' : ''}${bal > 0.004 ? ` · ${fmt(bal)} left for the next one` : ''}`;
+          owed = i === 0 && info ? info.remaining : 0; carry = owed;
+          extra = take(run, false); closed = true;
+          detail = `Statement closed ${dayLbl(c)}${info && info.entered ? ' (entered)' : ''}`;
         } else {                                           // closes before the run
-          carry = bal; charges = take(c, true); pay = carry + charges;
-          bal = take(run, false);
+          carry = bal; charges = take(c, true); owed = carry + charges;
+          extra = take(run, false);
           detail = `Statement closes ${dayLbl(c)}: ${fmt(carry)} carried + ${fmt(charges)} expected charges`;
         }
       }
-      pay = round2(pay);
+      owed = round2(owed);
+      const plan = plannedCardPayment(card, toLocalISO(run).slice(0, 7));   // "I'll pay X"
+      const pay = round2(plan != null ? plan : owed);
+      // What stays on the card after this payment.
+      bal = closed ? Math.max(0, bal + extra - pay) : Math.max(0, owed - pay) + extra;
+      if (!cyc) bal = Math.max(0, owed - pay);
+      const left = round2(Math.max(0, owed - pay));
+      if (plan != null) detail = `Paying ${fmt(plan)} of ${fmt(owed)} due${left > 0.004 ? ` · ${fmt(left)} left on the statement` : ''} · ${detail}`;
+      else if (closed && bal > 0.004) detail += ` · ${fmt(bal)} left for the next one`;
       if (pay > 0.004){
         events.push({
           date: run, kind: 'card', label: `${card} · ${cyc ? 'statement balance' : 'pay in full'}`, amount: -pay, acct: card, cardPay: true,
-          card, mode: cyc ? 'statement' : 'full', balance: round2(carry), charges: round2(charges), detail
+          card, mode: cyc ? 'statement' : 'full', balance: round2(carry), charges: round2(charges), owed, planned: plan != null, detail
         });
       }
     });

@@ -33,6 +33,7 @@ import { trashTxn, restoreTxn } from './trash.js';
 import { isWide } from './layout.js';   // NEW(v3.1)
 import { statementInfo } from './statement.js';   // NEW(v3.1)
 import { openNextMonthSheet, openPayRunSheet } from './nextmonth.js';   // NEW(v3.2)
+import { openCardSheet } from './cards.js';                             // NEW(v3.2)
 
 /* ── Paid state ─────────────────────────────────────────────────────── */
 // paidMonths maps 'YYYY-MM' → id of the payment transaction. A monthly bill
@@ -133,6 +134,27 @@ function setActual(bill, ym, amount){
   if ((bill.estMode || 'avg3') !== 'fixed') bill.amount = billEstimate(bill, '9999-99') || bill.amount;
 }
 
+/* NEW(v3.2): "I'll pay X this month" on an Auto (CC) bill. The amount you plan
+   to pay (bill.amounts['YYYY-MM']) replaces the statement/balance figure for
+   that month in Real available, the pay run, the forecast and the Pay button;
+   the difference from the statement stays on the card and the row says so. */
+export function plannedPayment(bill, ym){
+  if (!bill || bill.recurrence !== 'auto-cc') return null;
+  const v = (bill.amounts || {})[ym];
+  return v != null && isFinite(Number(v)) ? round2(v) : null;
+}
+// What you plan to pay on a card in a month (via its Auto (CC) bill), if anything.
+export function plannedCardPayment(card, ym){
+  const b = state.bills.find(x => x.recurrence === 'auto-cc' && x.active !== false && x.linkedAccount === card);
+  return b && !isBillPaid(b, ym) ? plannedPayment(b, ym) : null;
+}
+async function setPlanned(bill, ym, amount){
+  const next = { ...(bill.amounts || {}) };
+  if (amount == null) delete next[ym]; else next[ym] = round2(amount);
+  bill.amounts = next;
+  await dbPut('bills', bill);
+}
+
 // Effective amount owed for a bill — live for auto-cc, stored otherwise.
 // FIX(v2.9.1): optional (year, month) context — past months read the card's
 // balance as of that month instead of today's.
@@ -141,6 +163,15 @@ export function getBillAmount(bill, year, month){
   if (!bill.linkedAccount) return 0;
   const now = new Date();
   const isLive = year == null || (year === now.getFullYear() && month === now.getMonth() + 1);
+  // NEW(v3.2): the amount you said you'll pay wins; and the NEXT month's bill
+  // on a statement card is the statement that's due then (the one that has closed).
+  const planned = plannedPayment(bill, year == null ? currentYm() : ymOf(year, month));
+  if (planned != null) return planned;
+  const nextYm = ymOf(now.getMonth() === 11 ? now.getFullYear() + 1 : now.getFullYear(), now.getMonth() === 11 ? 1 : now.getMonth() + 2);
+  if (!isLive && bill.ccAmount === 'statement' && ymOf(year, month) === nextYm){
+    const s = statementInfo(bill.linkedAccount);
+    if (s) return s.remaining;
+  }
   // NEW(v3.1): "pay the statement balance" — what's still due from the last
   // statement (the amount that avoids interest), not everything charged since.
   if (isLive && bill.ccAmount === 'statement'){
@@ -306,6 +337,14 @@ export function billRowHTML(b, ym, isCurrentMonth, todayDay){
   const liveAmount = getBillAmount(b, Number(ym.slice(0, 4)), Number(ym.slice(5, 7)));
   const isVar = isVariableBill(b);
   const est = isVar && !isPaid && isBillEstimated(b, ym);   // NEW(v3.2): amount not in yet
+  // NEW(v3.2): an Auto (CC) bill shows the statement, what you plan to pay, and what's left.
+  const stmt = isAuto && !isPaid && b.ccAmount === 'statement' ? statementInfo(b.linkedAccount) : null;
+  const plan = isAuto && !isPaid ? plannedPayment(b, ym) : null;
+  const planNote = isAuto && !isPaid
+    ? (plan != null && stmt ? `Paying ${fmt(plan)} of the ${fmt(stmt.remaining)} statement${plan < stmt.remaining - 0.004 ? ` · ${fmt(stmt.remaining - plan)} left` : ''}`
+      : plan != null ? `Paying ${fmt(plan)}`
+      : stmt ? `Statement ${fmt(stmt.remaining)} still due` : '')
+    : '';
   const tag = isOnce ? ' <span class="bill-once-tag">Once</span>'
            : isAuto ? ' <span class="bill-auto-tag">Auto</span>'
            : isVar ? ' <span class="bill-var-tag">Varies</span>'
@@ -323,7 +362,9 @@ export function billRowHTML(b, ym, isCurrentMonth, todayDay){
           <span class="bill-status ${st.kind}">${st.label || (isOnce ? `Due ${esc(b.dueDate)}` : `Day ${dueDay}`)}</span>
           <span class="bill-acct">· ${acctMeta}</span>
           ${est ? `<button type="button" class="bill-enter" data-bill="${esc(b.id)}" data-ym="${ym}">Enter amount</button>` : ''}
+          ${isAuto && !isPaid ? `<button type="button" class="bill-enter" data-bill="${esc(b.id)}" data-ym="${ym}">${plan != null ? 'Change payment' : 'Set payment'}</button>` : ''}
         </div>
+        ${planNote ? `<div class="muted small" style="margin-top:4px;">${esc(planNote)}</div>` : ''}
         ${match ? `
           <div class="bill-match">
             Looks paid: ${fmt(match.amount)} on ${esc(match.date.slice(5))}${match.description ? ' · ' + esc(match.description) : ''}
@@ -594,6 +635,7 @@ export const payBill = busyGuard(async (billId, amount) => {
 export function openBillAmountSheet(billId, ym, { pay = false } = {}){
   const bill = state.bills.find(b => b.id === billId);
   if (!bill) return;
+  if (bill.recurrence === 'auto-cc') return openCardPaymentSheet(bill, ym, { pay });
   const [y, m] = ym.split('-').map(Number);
   const cur = billMonthAmount(bill, ym);
   const hist = billHistory(bill).filter(([k]) => k < ym).slice(-6).reverse();
@@ -627,6 +669,71 @@ export function openBillAmountSheet(billId, ym, { pay = false } = {}){
     closeSheet();
     await payBill(bill.id, v);
   });
+}
+
+/* NEW(v3.2): "I'll pay X" for a card bill — shows the statement, the balance,
+   and the difference your amount leaves, live as you type. */
+function openCardPaymentSheet(bill, ym, { pay = false } = {}){
+  const card = bill.linkedAccount;
+  const [y, m] = ym.split('-').map(Number);
+  const s = statementInfo(card);
+  const owed = s ? s.remaining : Math.max(0, balanceLatest(card));
+  const plan = plannedPayment(bill, ym);
+  const start = plan != null ? plan : owed;
+  const row = (l, r, cls = '') => `<div class="rb-row ${cls}"><span>${l}</span><span class="mono">${r}</span></div>`;
+  $('#sheetBody').innerHTML = `
+    <h2>${esc(card)} · ${monthName(m, true)} ${y}</h2>
+    <div class="real-breakdown" style="margin-bottom:8px;">
+      ${s ? row(`Statement closed ${monthName(Number(s.closeIso.slice(5, 7)), true)} ${Number(s.closeIso.slice(8))}${s.entered ? ' (entered)' : ''}`, fmt(s.statement))
+          + row('− Paid since it closed', fmt(s.paidSince))
+          + row(`= Statement still due ${monthName(Number(s.dueIso.slice(5, 7)), true)} ${Number(s.dueIso.slice(8))}`, fmt(s.remaining), 'total')
+          + row('Charged since it closed (next statement)', fmt(s.charged))
+        : ''}
+      ${row('Current balance', fmt(balanceLatest(card)))}
+    </div>
+    <div class="field" style="margin-top:12px;"><label for="cp-amt">What I'll pay</label>
+      <input class="input" id="cp-amt" type="text" inputmode="decimal" value="${start.toFixed(2)}" /></div>
+    <div id="cp-diff" class="muted small" style="margin:-4px 0 12px;line-height:1.5;"></div>
+    ${pay ? '<button class="btn" id="cp-pay">Pay it</button><button class="btn ghost" id="cp-save" style="margin-top:10px;">Save amount only</button>'
+          : '<button class="btn" id="cp-save">Save amount</button><button class="btn secondary" id="cp-pay" style="margin-top:10px;">Save &amp; pay</button>'}
+    ${plan != null ? '<button type="button" class="btn ghost" id="cp-clear" style="margin-top:10px;">Use the full statement</button>' : ''}
+    <button type="button" class="btn ghost" id="cp-stmt" style="margin-top:10px;">Set the statement balance…</button>
+  `;
+  openSheet();
+  const diff = () => {
+    const v = parseAmount($('#cp-amt').value);
+    const el = $('#cp-diff');
+    if (isNaN(v) || v < 0){ el.textContent = ''; return; }
+    const left = round2(owed - v);
+    el.innerHTML = !s ? `Balance after paying ${fmt(v)}: ${fmt(Math.max(0, balanceLatest(card) - v))}.`
+      : left > 0.004 ? `${fmt(v)} of ${fmt(owed)} due → <b>${fmt(left)} left</b> on this statement (it carries over, and can accrue interest).`
+      : left < -0.004 ? `${fmt(-left)} more than the statement — it goes toward what you've charged since.`
+      : 'Pays the statement exactly.';
+  };
+  $('#cp-amt').addEventListener('input', diff); diff();
+  const read = () => {
+    const v = parseAmount($('#cp-amt').value);
+    if (isNaN(v) || v <= 0){ toast('Enter an amount to pay'); return null; }
+    return round2(v);
+  };
+  $('#cp-save').addEventListener('click', busyGuard(async () => {
+    const v = read(); if (v == null) return;
+    await setPlanned(bill, ym, v);
+    closeSheet(); renderCurrent();
+    toast(`Paying ${fmt(v)} on ${card} for ${monthName(m, true)}`);
+  }));
+  $('#cp-pay').addEventListener('click', async () => {
+    const v = read(); if (v == null) return;
+    await setPlanned(bill, ym, v);
+    closeSheet();
+    await payBill(bill.id, v);
+  });
+  $('#cp-clear')?.addEventListener('click', busyGuard(async () => {
+    await setPlanned(bill, ym, null);
+    closeSheet(); renderCurrent();
+    toast('Using the full statement');
+  }));
+  $('#cp-stmt').addEventListener('click', () => openCardSheet(card));
 }
 
 /* NEW(v3.2): link any transaction to a bill by hand — for a payment whose

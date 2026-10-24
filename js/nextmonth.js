@@ -26,7 +26,7 @@ import { state, dbPut, dbDel, saveFlags } from './db.js';
 import { balanceLatest } from './effects.js';
 import { openSheet, closeSheet, openPicker } from './sheet.js';
 import { buildEvents, bulkPayDay, runDatesBetween, payInFullCards, currentCash } from './forecast.js';
-import { isBillPaid, billAppliesToMonth, getBillAmount, getBillDueDay, isBillEstimated, isVariableBill, logBillPayment } from './bills.js';
+import { isBillPaid, billAppliesToMonth, getBillAmount, getBillDueDay, isBillEstimated, isVariableBill, logBillPayment, plannedCardPayment } from './bills.js';
 import { renderCurrent } from './app.js';
 import { payerFor } from './cards.js';
 import { cardPayMode, statementInfo } from './statement.js';
@@ -199,8 +199,11 @@ export function payRunItems(year, month){
   const cards = full
     .map(n => {
       const s = cardPayMode(n) === 'statement' ? statementInfo(n) : null;
-      return { kind: 'card', name: n, amount: round2(s ? s.remaining : Math.max(0, balanceLatest(n))), from: payerFor(n),
-               meta: s ? `statement closed ${fmtDay(parseLocalDate(s.closeIso))}${s.entered ? ' (entered)' : ''} · from ` : 'pay in full · from ' };
+      const due = round2(s ? s.remaining : Math.max(0, balanceLatest(n)));
+      const plan = plannedCardPayment(n, ym);     // NEW(v3.2): "I'll pay X"
+      return { kind: 'card', name: n, amount: plan != null ? plan : due, from: payerFor(n),
+               meta: (plan != null ? `paying ${fmt(plan)} of ${fmt(due)} · ` : '')
+                     + (s ? `statement closed ${fmtDay(parseLocalDate(s.closeIso))}${s.entered ? ' (entered)' : ''} · from ` : 'pay in full · from ') };
     })
     .filter(c => c.amount > 0.004 && c.from)
     .map(c => ({ ...c, meta: c.meta + c.from }));
